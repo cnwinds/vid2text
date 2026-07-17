@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>vid2text — API 接口说明</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <canvas id="bgCanvas" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <header class="subpage-header">
+      <p class="back-link"><a href="/">← 返回主页</a></p>
+      <div class="eyebrow"><span class="dot"></span>API / v1</div>
+      <h1 class="subpage-title">接口说明</h1>
+      <p class="sub">每个接口单独一节 · 含请求说明与逐状态码返回值示例</p>
+    </header>
+
+    <section class="panel" id="api-docs">
+      <div class="history-header">
+        <h2>API 文档</h2>
+        <div class="api-doc-links">
+          <a class="refresh-btn" href="/docs" target="_blank" rel="noopener">OpenAPI</a>
+          <a class="refresh-btn" href="/api/v1/schema.json" target="_blank" rel="noopener">schema.json</a>
+          <a class="refresh-btn" href="/api/v1/docs.md" target="_blank" rel="noopener">docs.md</a>
+          <button type="button" class="refresh-btn" id="copy-schema-btn">复制 schema 地址</button>
+        </div>
+      </div>
+
+      <p class="api-intro">给一个视频链接，拿回字幕。可能 <strong>立即返回</strong>（200），也可能 <strong>排队转换</strong>（202 后轮询 <code>processing.poll_url</code>）。</p>
+
+      <div class="api-base-url">
+        <span class="field-label">Base URL</span>
+        <code id="api-base-url"></code>
+      </div>
+
+      <div class="api-flow-hint">
+        <span class="api-flow-step">POST url</span>
+        <span class="api-flow-arrow">→</span>
+        <span class="api-flow-step ok">200 有字幕</span>
+        <span class="api-flow-or">或</span>
+        <span class="api-flow-step wait">202 轮询 poll_url</span>
+      </div>
+
+      <nav class="api-endpoint-nav" id="api-endpoint-nav" aria-label="接口目录">
+        <h3 class="api-nav-title">接口目录</h3>
+        <ul class="api-nav-list" id="api-nav-list"></ul>
+      </nav>
+
+      <div class="api-endpoints" id="api-endpoints">加载中…</div>
+
+      <details class="api-details">
+        <summary>Markdown 原文（供 AI / 脚本读取）</summary>
+        <pre class="api-doc-md" id="api-doc-md">加载中…</pre>
+        <button type="button" class="copy-btn" id="copy-md-btn">复制 Markdown</button>
+      </details>
+    </section>
+
+    <footer>VID2TEXT — LOCAL EXTRACTION ENGINE</footer>
+  </div>
+  <script src="/static/api-docs.js"></script>
+</body>
+</html>

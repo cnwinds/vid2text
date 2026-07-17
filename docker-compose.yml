@@ -1,0 +1,21 @@
+services:
+  vid2text:
+    build: .
+    container_name: vid2text
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/app/data
+      # 应用代码挂载：改代码后 docker compose restart 即可，无需 rebuild
+      - ./douyin_to_text:/app/douyin_to_text:ro
+      - ./web:/app/web:ro
+      - ./run_web.py:/app/run_web.py:ro
+    env_file:
+      - .env
+    environment:
+      - SENSEVOICE_OFFLINE=1
+      - SENSEVOICE_MODEL_DIR=/app/models/SenseVoiceSmall-onnx
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    shm_size: "1gb"

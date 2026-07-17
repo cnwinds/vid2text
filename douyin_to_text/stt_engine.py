@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import gc
+import re
+import subprocess
 import time
 import tracemalloc
 from dataclasses import dataclass, field
@@ -154,35 +156,105 @@ def transcribe_faster_whisper(
     return _normalize_text("\n".join(lines))
 
 
-def _resolve_sensevoice_model_dir(model_name: str) -> str:
-    """Resolve SenseVoice model dir and ensure ONNX + BPE assets exist."""
+def _sensevoice_onnx_name(model_dir: Path, model_name: str) -> str:
+    quantize = model_name.endswith("-onnx") or (model_dir / "model_quant.onnx").exists()
+    return "model_quant.onnx" if quantize else "model.onnx"
+
+
+def _local_sensevoice_dirs(model_name: str) -> list[Path]:
+    """Candidate local model directories (Docker / offline bundle)."""
+    import os
+
+    short = model_name.rsplit("/", 1)[-1]
+    root = _project_root() / "models"
+    candidates: list[Path] = []
+    env_dir = os.environ.get("SENSEVOICE_MODEL_DIR", "").strip()
+    if env_dir:
+        candidates.append(Path(env_dir))
+    candidates.extend(
+        [
+            root / short,
+            root / "SenseVoiceSmall-onnx",
+            root / "SenseVoiceSmall",
+        ]
+    )
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in candidates:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def _ensure_sensevoice_bpe(model_dir: Path) -> None:
+    """Ensure BPE vocab exists beside ONNX weights."""
+    import os
     import shutil
 
     from modelscope.hub.snapshot_download import snapshot_download
 
+    bpe_name = "chn_jpn_yue_eng_ko_spectok.bpe.model"
+    bpe = model_dir / bpe_name
+    if bpe.exists():
+        return
+
+    root = _project_root() / "models"
+    for src_dir in (root / "SenseVoiceSmall", model_dir.parent / "SenseVoiceSmall"):
+        src = src_dir / bpe_name
+        if src.exists():
+            shutil.copy2(src, bpe)
+            return
+
+    offline = os.environ.get("SENSEVOICE_OFFLINE", "").lower() in ("1", "true", "yes")
+    if offline:
+        raise FileNotFoundError(
+            f"SenseVoice 缺少 BPE 词表: {bpe}。"
+            "Docker 构建时应预置 models/SenseVoiceSmall-onnx/ 与 BPE 文件。"
+        )
+
+    snapshot_download("iic/SenseVoiceSmall", allow_file_pattern=[bpe_name])
+    src = model_dir.parent / "SenseVoiceSmall" / bpe_name
+    if src.exists():
+        shutil.copy2(src, bpe)
+    else:
+        raise FileNotFoundError(
+            f"SenseVoice 缺少 BPE 词表: {bpe}。"
+            "请先下载 iic/SenseVoiceSmall 或手动放置该文件。"
+        )
+
+
+def _resolve_sensevoice_model_dir(model_name: str) -> str:
+    """Resolve SenseVoice model dir and ensure ONNX + BPE assets exist."""
+    import os
+
+    from modelscope.hub.snapshot_download import snapshot_download
+
+    for candidate in _local_sensevoice_dirs(model_name):
+        if not candidate.is_dir():
+            continue
+        onnx_name = _sensevoice_onnx_name(candidate, model_name)
+        if (candidate / onnx_name).exists():
+            _ensure_sensevoice_bpe(candidate)
+            return str(candidate)
+
+    offline = os.environ.get("SENSEVOICE_OFFLINE", "").lower() in ("1", "true", "yes")
+    if offline:
+        raise FileNotFoundError(
+            "SenseVoice 本地模型未找到，且已启用 SENSEVOICE_OFFLINE。"
+            f"请将模型放到 {_project_root() / 'models' / 'SenseVoiceSmall-onnx'}"
+        )
+
     model_dir = Path(snapshot_download(model_name))
-    quantize = model_name.endswith("-onnx") or (model_dir / "model_quant.onnx").exists()
-    onnx_name = "model_quant.onnx" if quantize else "model.onnx"
+    onnx_name = _sensevoice_onnx_name(model_dir, model_name)
     if not (model_dir / onnx_name).exists():
         raise FileNotFoundError(
             f"SenseVoice ONNX 模型不存在: {model_dir / onnx_name}。"
             "请使用 iic/SenseVoiceSmall-onnx，或先导出 ONNX。"
         )
 
-    bpe = model_dir / "chn_jpn_yue_eng_ko_spectok.bpe.model"
-    if not bpe.exists():
-        full_dir = model_dir.parent / "SenseVoiceSmall"
-        src = full_dir / bpe.name
-        if not src.exists():
-            snapshot_download("iic/SenseVoiceSmall", allow_file_pattern=[bpe.name])
-            src = full_dir / bpe.name
-        if src.exists():
-            shutil.copy2(src, bpe)
-        else:
-            raise FileNotFoundError(
-                f"SenseVoice 缺少 BPE 词表: {bpe}。"
-                "请先下载 iic/SenseVoiceSmall 或手动放置该文件。"
-            )
+    _ensure_sensevoice_bpe(model_dir)
     return str(model_dir)
 
 
@@ -190,6 +262,55 @@ def _sensevoice_device_id(device: str) -> str:
     if device.startswith("cuda"):
         return device.split(":")[-1] if ":" in device else "0"
     return "-1"
+
+
+def _audio_duration_sec(path: Path) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(result.stdout.strip())
+
+
+def _split_audio_chunks(audio_path: Path, chunk_sec: int = 60) -> list[Path]:
+    """Split long audio to avoid ONNX OOM on low-memory servers."""
+    try:
+        if _audio_duration_sec(audio_path) <= chunk_sec * 1.2:
+            return [audio_path]
+    except (subprocess.CalledProcessError, ValueError):
+        return [audio_path]
+
+    chunk_dir = audio_path.parent / f".chunks_{audio_path.stem}"
+    chunk_dir.mkdir(exist_ok=True)
+    pattern = str(chunk_dir / "part_%03d.wav")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(audio_path),
+            "-f", "segment", "-segment_time", str(chunk_sec),
+            "-reset_timestamps", "1",
+            "-acodec", "copy",
+            pattern,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    parts = sorted(chunk_dir.glob("part_*.wav"))
+    return parts if parts else [audio_path]
+
+
+def _strip_sensevoice_tags(text: str) -> str:
+    return re.sub(
+        r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF]+",
+        "",
+        text,
+    )
 
 
 def transcribe_sensevoice(
@@ -204,7 +325,7 @@ def transcribe_sensevoice(
         from funasr_onnx.utils.postprocess_utils import rich_transcription_postprocess
     except ImportError as exc:
         raise ImportError(
-            "SenseVoice 需要: pip install funasr-onnx modelscope jieba"
+            "SenseVoice 需要: pip install funasr-onnx modelscope jieba torch"
         ) from exc
 
     model_dir = _resolve_sensevoice_model_dir(model_name)
@@ -217,14 +338,17 @@ def transcribe_sensevoice(
     )
     lang_map = {"zh": "zh", "en": "en", "auto": "auto", "yue": "yue", "ja": "ja", "ko": "ko"}
     lang = lang_map.get(language, "auto")
-    results = model(str(audio_path), language=lang, use_itn=True)
-    raw = results[0] if results else ""
-    text = rich_transcription_postprocess(raw)
-    # Strip emoji / emotion tags SenseVoice may append
-    import re
 
-    text = re.sub(r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF]+", "", text)
-    return _normalize_text(text)
+    texts: list[str] = []
+    for chunk in _split_audio_chunks(audio_path, chunk_sec=60):
+        results = model(str(chunk), language=lang, use_itn=True)
+        raw = results[0] if results else ""
+        text = rich_transcription_postprocess(raw)
+        text = _strip_sensevoice_tags(text)
+        if text.strip():
+            texts.append(text.strip())
+
+    return _normalize_text(" ".join(texts))
 
 
 def transcribe_sensevoice_funasr(

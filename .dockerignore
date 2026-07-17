@@ -1,0 +1,15 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+.venv
+venv
+.env
+.env.*
+debug
+output
+docs
+data
+models
+scripts/*
+!scripts/download_sensevoice_models.py

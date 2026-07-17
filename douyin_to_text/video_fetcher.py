@@ -5,12 +5,51 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
 from playwright.sync_api import sync_playwright
 
 from douyin_to_text.subtitle_parser import parse_subtitle_content
+
+# Docker / 低内存环境下 Chromium 需额外参数，否则 Page crashed
+CHROMIUM_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-extensions",
+    "--no-zygote",
+    "--single-process",
+]
+
+
+def _launch_chromium(playwright: Any, headless: bool = True):
+    return playwright.chromium.launch(headless=headless, args=CHROMIUM_ARGS)
+
+
+DOUYIN_DOWNLOAD_HEADERS = {
+    "Referer": "https://www.douyin.com/",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+}
+
+
+def _validate_video_file(path: Path) -> None:
+    """Reject HTML error pages saved as .mp4."""
+    head = path.read_bytes()[:256]
+    if head.lstrip().startswith(b"<") or b"Forbidden" in head or b"403" in head[:80]:
+        path.unlink(missing_ok=True)
+        raise RuntimeError(
+            "视频下载失败：CDN 返回了 HTML 错误页（通常缺少 Referer）。"
+        )
+    if len(head) < 12 or head[4:8] != b"ftyp":
+        path.unlink(missing_ok=True)
+        raise RuntimeError("视频下载失败：文件不是有效的 MP4。")
 
 
 @dataclass
@@ -88,7 +127,7 @@ def fetch_metadata(aweme_id: str, headless: bool = True, timeout_ms: int = 90000
     detail: dict[str, Any] = {}
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
+        browser = _launch_chromium(p, headless=headless)
         page = browser.new_context(locale="zh-CN").new_page()
 
         with page.expect_response(
@@ -121,16 +160,48 @@ def fetch_metadata(aweme_id: str, headless: bool = True, timeout_ms: int = 90000
     )
 
 
-def download_video(video_url: str, output_path: Path, timeout: int = 600) -> Path:
-    """Download video file using curl."""
+def download_video(
+    video_url: str,
+    output_path: Path,
+    timeout: int = 600,
+    referer: str = "https://www.douyin.com/",
+    on_progress: Callable[[int, int, float], None] | None = None,
+) -> Path:
+    """Download Douyin video (CDN requires Referer / User-Agent)."""
+    import time
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["curl", "-sL", video_url, "-o", str(output_path)],
-        check=True,
+    headers = {**DOUYIN_DOWNLOAD_HEADERS, "Referer": referer}
+    with httpx.stream(
+        "GET",
+        video_url,
+        headers=headers,
+        follow_redirects=True,
         timeout=timeout,
-    )
+    ) as resp:
+        resp.raise_for_status()
+        total = int(resp.headers.get("content-length") or 0)
+        downloaded = 0
+        started = time.monotonic()
+        last_report = 0.0
+        with output_path.open("wb") as f:
+            for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                f.write(chunk)
+                downloaded += len(chunk)
+                if on_progress:
+                    now = time.monotonic()
+                    if now - last_report >= 0.35:
+                        elapsed = now - started
+                        speed = downloaded / elapsed if elapsed > 0 else 0.0
+                        on_progress(downloaded, total, speed)
+                        last_report = now
+        if on_progress:
+            elapsed = time.monotonic() - started
+            speed = downloaded / elapsed if elapsed > 0 else 0.0
+            on_progress(downloaded, total, speed)
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise RuntimeError("视频下载失败或文件为空")
+    _validate_video_file(output_path)
     return output_path
 
 
@@ -138,15 +209,18 @@ def extract_audio(video_path: Path, audio_path: Path | None = None) -> Path:
     """Extract mono 16kHz WAV audio for STT."""
     if audio_path is None:
         audio_path = video_path.with_suffix(".wav")
-    subprocess.run(
+    result = subprocess.run(
         [
             "ffmpeg", "-y", "-i", str(video_path),
             "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
             str(audio_path),
         ],
-        check=True,
         capture_output=True,
+        text=True,
     )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"ffmpeg 提取音频失败: {err[-500:]}")
     return audio_path
 
 
@@ -163,6 +237,10 @@ def fetch_and_download(
         work_dir.mkdir(parents=True, exist_ok=True)
 
     video_path = work_dir / f"{aweme_id}.mp4"
-    download_video(meta.video_url, video_path)
+    download_video(
+        meta.video_url,
+        video_path,
+        referer=f"https://www.douyin.com/video/{aweme_id}",
+    )
     audio_path = extract_audio(video_path)
     return meta, video_path, audio_path

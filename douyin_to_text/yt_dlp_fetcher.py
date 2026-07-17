@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from douyin_to_text.progress_metrics import MetricsCallback, run_monitored
 
 import httpx
 import yt_dlp
@@ -200,6 +204,8 @@ def download_audio(
     url: str,
     work_dir: Path,
     cookies: str | None = None,
+    on_download_progress: Callable[[int, int, float], None] | None = None,
+    on_reencode_report: MetricsCallback | None = None,
 ) -> Path:
     """Download best audio and convert to 16kHz mono WAV."""
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -221,6 +227,24 @@ def download_audio(
     if cookies:
         opts["cookiefile"] = cookies
 
+    last_report = 0.0
+
+    def hook(d: dict[str, Any]) -> None:
+        nonlocal last_report
+        if not on_download_progress or d.get("status") != "downloading":
+            return
+        now = time.monotonic()
+        if now - last_report < 0.35:
+            return
+        last_report = now
+        speed = float(d.get("speed") or 0)
+        downloaded = int(d.get("downloaded_bytes") or 0)
+        total = int(d.get("total_bytes") or d.get("total_bytes_estimate") or 0)
+        on_download_progress(downloaded, total, speed)
+
+    if on_download_progress:
+        opts["progress_hooks"] = [hook]
+
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         vid = info.get("id") or "audio"
@@ -231,15 +255,23 @@ def download_audio(
 
     # Re-encode to 16kHz mono for Whisper
     out_wav = work_dir / f"{vid}_16k.wav"
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", str(wav if wav.exists() else next(work_dir.glob(f"{vid}.*"))),
-            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-            str(out_wav),
-        ],
-        check=True,
-        capture_output=True,
-    )
+    src = wav if wav.exists() else next(work_dir.glob(f"{vid}.*"))
+
+    def _reencode() -> Path:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", str(src),
+                "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                str(out_wav),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return out_wav
+
+    if on_reencode_report:
+        return run_monitored(on_reencode_report, _reencode, kind="cpu", detail="转码音轨…")
+    _reencode()
     return out_wav
 
 

@@ -3,63 +3,96 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>vid2text — 视频转文字</title>
+  <title>vid2text — 视频转字幕</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <main class="container">
+  <canvas id="bgCanvas" aria-hidden="true"></canvas>
+  <div class="wrap">
     <header>
-      <h1>vid2text</h1>
-      <p class="subtitle">支持抖音 / B站 / YouTube 等，优先平台字幕，无字幕则 STT</p>
+      <div class="eyebrow"><span class="dot"></span>LOCAL EXTRACTION</div>
+      <div class="title-row">
+        <h1>vid2text</h1>
+        <div class="wave-hero" id="heroWave" aria-hidden="true"></div>
+      </div>
+      <p class="sub">粘贴视频链接，提取口播 / 字幕文本</p>
+      <p class="header-entry"><a href="/api-docs">API 接口说明 →</a></p>
     </header>
 
-    <section class="card">
+    <section class="panel">
       <form id="submit-form">
-        <label for="url-input">视频链接</label>
+        <label class="field-label" for="url-input">视频链接</label>
         <div class="input-row">
           <input
             id="url-input"
             type="url"
-            placeholder="粘贴视频 URL，例如 https://www.youtube.com/watch?v=..."
+            name="url"
+            placeholder="https://www.douyin.com/video/… 或 bilibili / YouTube"
+            autocomplete="off"
             required
           />
-          <button type="submit" id="submit-btn">提交</button>
+          <button type="submit" class="submit-btn" id="submit-btn">提交</button>
         </div>
       </form>
       <p id="status-msg" class="status-msg" hidden></p>
     </section>
 
-    <section id="result-section" class="card" hidden>
-      <h2>结果</h2>
-      <div class="meta">
-        <span id="result-platform"></span>
-        <span id="result-status" class="badge"></span>
+    <section class="panel processing-panel" id="procPanel" hidden>
+      <p class="section-label">转码中</p>
+      <div class="proc-canvas-wrap">
+        <canvas id="procCanvas" aria-hidden="true"></canvas>
       </div>
-      <h3 id="result-title"></h3>
-
-      <div class="field">
-        <h4>视频描述</h4>
-        <pre id="result-description"></pre>
+      <div class="progress-track"><div class="progress-fill" id="progFill"></div></div>
+      <div class="stage-row" id="stageRow">
+        <div class="stage" data-step="parse">
+          <span class="stage-name">解析链接</span>
+          <span class="stage-meta" data-meta></span>
+        </div>
+        <div class="stage" data-step="fetch_meta">
+          <span class="stage-name">获取视频信息</span>
+          <span class="stage-meta" data-meta></span>
+        </div>
+        <div class="stage" data-step="fetch_subtitle">
+          <span class="stage-name">获取平台字幕</span>
+          <span class="stage-meta" data-meta></span>
+        </div>
+        <div class="stage" data-step="download">
+          <span class="stage-name">下载视频</span>
+          <span class="stage-meta" data-meta></span>
+        </div>
+        <div class="stage" data-step="extract_audio">
+          <span class="stage-name">提取音轨</span>
+          <span class="stage-meta" data-meta></span>
+        </div>
+        <div class="stage" data-step="stt">
+          <span class="stage-name">语音识别</span>
+          <span class="stage-meta" data-meta></span>
+        </div>
+        <div class="stage" data-step="correct">
+          <span class="stage-name">文本修正</span>
+          <span class="stage-meta" data-meta></span>
+        </div>
       </div>
-      <div class="field">
-        <h4>原始转录</h4>
-        <pre id="result-raw"></pre>
-      </div>
-      <div class="field">
-        <h4>修正后文本</h4>
-        <pre id="result-corrected"></pre>
-      </div>
-      <p id="result-error" class="error" hidden></p>
     </section>
 
-    <section class="card">
-      <div class="section-head">
+    <section class="panel" id="result-section" hidden>
+      <p class="section-label">结果</p>
+      <div id="resultsList"></div>
+    </section>
+
+    <section class="panel">
+      <div class="history-header">
         <h2>历史记录</h2>
-        <button type="button" id="refresh-history" class="ghost">刷新</button>
+        <button type="button" class="refresh-btn" id="refresh-history">刷新</button>
       </div>
-      <ul id="history-list" class="history-list"></ul>
+      <div id="history-list"></div>
     </section>
-  </main>
+
+    <footer>VID2TEXT — LOCAL EXTRACTION ENGINE</footer>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>

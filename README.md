@@ -45,11 +45,14 @@ uvicorn web.app:app --host 127.0.0.1 --port 8000
 
 ### API
 
+对外接口见 [`/api-docs`](/api-docs) 或 `GET /api/v1/docs.md`。
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/submit` | 提交 URL，body: `{"url": "..."}`；命中已有记录则直接返回 |
-| `GET` | `/api/task/{id}` | 查询任务状态与转录结果 |
-| `GET` | `/api/history` | 历史记录列表 |
+| `POST` | `/api/v1/subtitles` | 获取视频字幕；200=就绪，202=处理中 |
+| `GET` | `/api/v1/subtitles/{id}` | 轮询字幕结果 |
+| `GET` | `/api/v1/subtitles?url=...` | 按 URL 查询 |
+| `GET` | `/api/v1/subtitles/{id}/text` | 纯文本字幕 |
 
 ### 架构
 
