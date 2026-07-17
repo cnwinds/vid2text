@@ -60,9 +60,9 @@ ENGINE_SPECS: dict[str, EngineSpec] = {
     ),
     "sensevoice": EngineSpec(
         name="sensevoice",
-        description="阿里 SenseVoice Small（中文优化，轻量）",
-        default_model="iic/SenseVoiceSmall",
-        models=("iic/SenseVoiceSmall",),
+        description="阿里 SenseVoice Small（中文优化，轻量，需 funasr-onnx）",
+        default_model="iic/SenseVoiceSmall-onnx",
+        models=("iic/SenseVoiceSmall-onnx", "iic/SenseVoiceSmall"),
         pip_extra="sensevoice",
     ),
 }
@@ -154,27 +154,77 @@ def transcribe_faster_whisper(
     return _normalize_text("\n".join(lines))
 
 
+def _resolve_sensevoice_model_dir(model_name: str) -> str:
+    """Resolve SenseVoice model dir and ensure ONNX + BPE assets exist."""
+    import shutil
+
+    from modelscope.hub.snapshot_download import snapshot_download
+
+    model_dir = Path(snapshot_download(model_name))
+    quantize = model_name.endswith("-onnx") or (model_dir / "model_quant.onnx").exists()
+    onnx_name = "model_quant.onnx" if quantize else "model.onnx"
+    if not (model_dir / onnx_name).exists():
+        raise FileNotFoundError(
+            f"SenseVoice ONNX 模型不存在: {model_dir / onnx_name}。"
+            "请使用 iic/SenseVoiceSmall-onnx，或先导出 ONNX。"
+        )
+
+    bpe = model_dir / "chn_jpn_yue_eng_ko_spectok.bpe.model"
+    if not bpe.exists():
+        full_dir = model_dir.parent / "SenseVoiceSmall"
+        src = full_dir / bpe.name
+        if not src.exists():
+            snapshot_download("iic/SenseVoiceSmall", allow_file_pattern=[bpe.name])
+            src = full_dir / bpe.name
+        if src.exists():
+            shutil.copy2(src, bpe)
+        else:
+            raise FileNotFoundError(
+                f"SenseVoice 缺少 BPE 词表: {bpe}。"
+                "请先下载 iic/SenseVoiceSmall 或手动放置该文件。"
+            )
+    return str(model_dir)
+
+
+def _sensevoice_device_id(device: str) -> str:
+    if device.startswith("cuda"):
+        return device.split(":")[-1] if ":" in device else "0"
+    return "-1"
+
+
 def transcribe_sensevoice(
     audio_path: Path,
     language: str = "zh",
-    model_name: str = "iic/SenseVoiceSmall",
+    model_name: str = "iic/SenseVoiceSmall-onnx",
     device: str = "cpu",
 ) -> str:
-    """Transcribe using SenseVoice via funasr-onnx or funasr."""
+    """Transcribe using SenseVoice via funasr-onnx (pre-exported ONNX)."""
     try:
         from funasr_onnx import SenseVoiceSmall
         from funasr_onnx.utils.postprocess_utils import rich_transcription_postprocess
     except ImportError as exc:
         raise ImportError(
-            "SenseVoice 需要安装可选依赖: pip install -e '.[sensevoice]'"
+            "SenseVoice 需要: pip install funasr-onnx modelscope jieba"
         ) from exc
 
-    model = SenseVoiceSmall(model_name, batch_size=1, device=device)
+    model_dir = _resolve_sensevoice_model_dir(model_name)
+    quantize = model_name.endswith("-onnx") or Path(model_dir, "model_quant.onnx").exists()
+    model = SenseVoiceSmall(
+        model_dir,
+        batch_size=1,
+        device_id=_sensevoice_device_id(device),
+        quantize=quantize,
+    )
     lang_map = {"zh": "zh", "en": "en", "auto": "auto", "yue": "yue", "ja": "ja", "ko": "ko"}
     lang = lang_map.get(language, "auto")
     results = model(str(audio_path), language=lang, use_itn=True)
     raw = results[0] if results else ""
-    return _normalize_text(rich_transcription_postprocess(raw))
+    text = rich_transcription_postprocess(raw)
+    # Strip emoji / emotion tags SenseVoice may append
+    import re
+
+    text = re.sub(r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF]+", "", text)
+    return _normalize_text(text)
 
 
 def transcribe_sensevoice_funasr(

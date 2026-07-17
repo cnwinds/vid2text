@@ -30,7 +30,7 @@ BENCHMARK_MATRIX: list[tuple[str, str]] = [
     ("faster-whisper", "small"),
     ("faster-whisper", "distil-large-v3"),
     ("faster-whisper", "large-v3-turbo"),
-    ("sensevoice", "iic/SenseVoiceSmall"),
+    ("sensevoice", "iic/SenseVoiceSmall-onnx"),
 ]
 
 # Approximate download sizes (MB) from HuggingFace / OpenAI hubs
@@ -45,6 +45,7 @@ MODEL_SIZE_MB: dict[str, float] = {
     "distil-small.en": 200,
     "distil-medium.en": 400,
     "iic/SenseVoiceSmall": 230,
+    "iic/SenseVoiceSmall-onnx": 230,
 }
 
 
@@ -69,6 +70,17 @@ def _model_size_mb(engine: str, model: str) -> float | None:
         model_bin = local / "model.bin"
         if model_bin.exists():
             return round(model_bin.stat().st_size / (1024 * 1024), 1)
+    if engine == "sensevoice":
+        try:
+            from modelscope.hub.snapshot_download import snapshot_download
+
+            model_dir = Path(snapshot_download(model, local_files_only=True))
+            for name in ("model_quant.onnx", "model.onnx", "model.pt"):
+                candidate = model_dir / name
+                if candidate.exists():
+                    return round(candidate.stat().st_size / (1024 * 1024), 1)
+        except Exception:
+            pass
     if model in MODEL_SIZE_MB:
         return MODEL_SIZE_MB[model]
     if engine == "faster-whisper":
@@ -93,11 +105,12 @@ def _is_available(engine: str) -> tuple[bool, str | None]:
     elif spec.pip_extra == "sensevoice":
         try:
             from funasr_onnx import SenseVoiceSmall  # noqa: F401
+            import jieba  # noqa: F401
         except ImportError:
             try:
                 from funasr import AutoModel  # noqa: F401
             except ImportError:
-                return False, "缺少 funasr-onnx 或 funasr"
+                return False, "缺少 funasr-onnx/jieba 或 funasr"
     return True, None
 
 

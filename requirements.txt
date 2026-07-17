@@ -7,5 +7,4 @@ faster-whisper>=1.0.0
 
 # Optional STT backends — install as needed:
 #   pip install openai-whisper torch          # whisper backend
-#   pip install funasr-onnx                     # sensevoice backend (recommended)
-#   pip install funasr modelscope torch         # sensevoice full backend
+#   pip install -r requirements-stt-optional.txt  # sensevoice (Py3.13 OK with ONNX)
