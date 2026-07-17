@@ -60,7 +60,7 @@ ENGINE_SPECS: dict[str, EngineSpec] = {
     ),
     "sensevoice": EngineSpec(
         name="sensevoice",
-        description="阿里 SenseVoice Small（中文优化，轻量，需 funasr-onnx）",
+        description="阿里 SenseVoice Small（默认，中文优化，230MB ONNX）",
         default_model="iic/SenseVoiceSmall-onnx",
         models=("iic/SenseVoiceSmall-onnx", "iic/SenseVoiceSmall"),
         pip_extra="sensevoice",
@@ -80,7 +80,7 @@ def list_models(engine: str) -> list[str]:
 
 
 def default_engine() -> str:
-    return "faster-whisper"
+    return "sensevoice"
 
 
 def default_model(engine: str | None = None) -> str:

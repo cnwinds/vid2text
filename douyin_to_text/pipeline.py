@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from douyin_to_text.postprocess import correct_transcript
-from douyin_to_text.stt_engine import transcribe
+from douyin_to_text.stt_engine import default_engine, default_model, transcribe
 from douyin_to_text.url_parser import Platform, parse_video_url, resolve_short_url
 from douyin_to_text.video_fetcher import fetch_and_download, fetch_metadata
 from douyin_to_text.yt_dlp_fetcher import (
@@ -37,8 +37,8 @@ class PipelineOptions:
 
     work_dir: Path | None = None
     cookies: Path | None = None
-    stt_engine: str = "whisper"
-    whisper_model: str = "base"
+    stt_engine: str = default_engine()
+    whisper_model: str = default_model()
     headless: bool = True
     no_stt: bool = False
 

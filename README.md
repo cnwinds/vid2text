@@ -2,7 +2,7 @@
 
 从视频网站 URL 提取文字内容，支持 **CLI** 与 **Web** 两种使用方式。
 
-**提取优先级：平台字幕 > 标题/描述 > Whisper 语音转录（STT）**
+**提取优先级：平台字幕 > 标题/描述 > SenseVoice 语音转录（STT，默认）**
 
 | 平台 | 获取方式 | 字幕接口 |
 |------|----------|----------|
@@ -93,8 +93,11 @@ python -m douyin_to_text.cli "https://www.bilibili.com/video/BV1GJ411x7h7" --des
 # 抖音 — 描述（快速）
 python -m douyin_to_text.cli "https://www.douyin.com/jingxuan?modal_id=7639590279997132072" --desc-only
 
-# 指定 STT 引擎
-python -m douyin_to_text.cli "URL" --stt-engine faster-whisper --whisper-model tiny
+# 指定 STT 引擎（默认 sensevoice，中文准确率更高）
+python -m douyin_to_text.cli "URL" -o out.txt
+
+# 回退 faster-whisper（输出自带标点）
+python -m douyin_to_text.cli "URL" --stt-engine faster-whisper --whisper-model small
 ```
 
 ---
@@ -108,7 +111,7 @@ vid2text/
 │   ├── video_fetcher.py     # 抖音 Playwright
 │   ├── yt_dlp_fetcher.py    # YouTube/B站/通用
 │   ├── subtitle_parser.py   # 字幕解析
-│   ├── stt_engine.py        # Whisper STT（engine 参数切换）
+│   ├── stt_engine.py        # STT 引擎（默认 sensevoice，可切换 faster-whisper）
 │   ├── postprocess.py       # 转录后处理（预留 correct_transcript）
 │   ├── pipeline.py          # Web/Worker 复用 pipeline
 │   └── cli.py               # CLI 入口

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from douyin_to_text.pipeline import PipelineOptions, run_pipeline
+from douyin_to_text.stt_engine import default_engine, default_model
 from web import db
 
 logger = logging.getLogger(__name__)
@@ -18,8 +19,8 @@ _stop_event = threading.Event()
 # 可通过环境变量覆盖
 WORK_DIR = Path(__file__).resolve().parent.parent / "data" / "work"
 COOKIES_PATH: Path | None = None
-STT_ENGINE = "whisper"
-WHISPER_MODEL = "base"
+STT_ENGINE = default_engine()
+WHISPER_MODEL = default_model()
 POLL_INTERVAL_SEC = 2.0
 
 

@@ -20,8 +20,8 @@
 
 | 引擎 | 模型 | 耗时(s) | 峰值内存(MB) | 模型大小(MB) | 字符准确率 | 状态 |
 |------|------|---------|--------------|--------------|------------|------|
-| faster-whisper | small | 12.7 | 51.4 | 461 | **87.4%** | ✅ 当前默认 |
-| sensevoice | iic/SenseVoiceSmall-onnx | 13.7 | 98.1 | 230 | **93.8%** | ✅ 中文推荐 |
+| faster-whisper | small | 12.7 | 51.4 | 461 | **87.4%** | ✅ 备选（自带标点） |
+| sensevoice | iic/SenseVoiceSmall-onnx | 13.7 | 98.1 | 230 | **93.8%** | ✅ **当前默认** |
 
 ### 转录抽样对比
 
@@ -87,26 +87,26 @@ python -m douyin_to_text.cli "URL" --stt-engine sensevoice
 
 **理由：** 字符准确率 **93.8%**，比 faster-whisper small 高 **+6.4%**；模型仅 **230 MB**（约为 Whisper small 一半）；同音字与中文数字读法更符合口播场景。
 
-### 保持 faster-whisper 为代码默认
+### 保持 faster-whisper 为备选
 
-**理由：**
+```bash
+python -m douyin_to_text.cli "URL" --stt-engine faster-whisper --whisper-model small
+```
 
-- 核心依赖已在 `requirements.txt`，零额外安装即可用
-- 内存更低（51 MB vs 98 MB），输出带标点
-- SenseVoice 需 ModelScope 首次下载 + 可选依赖，对新用户门槛更高
+**理由：** 内存更低（51 MB vs 98 MB），输出自带标点；无需 ModelScope 首次下载。
 
-> **总结：不切换代码默认引擎**（仍为 `faster-whisper` + `small`），但 **中文口播场景建议 `--stt-engine sensevoice`**。
+> **总结：代码默认引擎已切换为 `sensevoice`**（`iic/SenseVoiceSmall-onnx`）。中文口播准确率 93.8%，配合 LLM 后处理补标点。需要自带标点时可回退 faster-whisper。
 
 ## 6. 如何切换引擎
 
 ### CLI
 
 ```bash
-# 默认（faster-whisper + small）
+# 默认（sensevoice）
 python -m douyin_to_text.cli "https://v.douyin.com/xxx" -o output.txt
 
-# 中文高精度推荐
-python -m douyin_to_text.cli "URL" --stt-engine sensevoice
+# 回退 faster-whisper（自带标点）
+python -m douyin_to_text.cli "URL" --stt-engine faster-whisper --whisper-model small
 
 # 回退 whisper base
 python -m douyin_to_text.cli "URL" --stt-engine whisper --whisper-model base
