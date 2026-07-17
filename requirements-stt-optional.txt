@@ -1,0 +1,12 @@
+# Optional STT backends — install only what you need
+#
+# OpenAI Whisper (PyTorch, slower on CPU)
+openai-whisper>=20231117
+torch
+
+# SenseVoice via ONNX runtime (recommended for Chinese, Python 3.10–3.12)
+funasr-onnx>=0.4.0
+
+# Full FunASR stack (Paraformer, SenseVoice, VAD, etc.)
+funasr>=1.0.0
+modelscope>=1.9.0

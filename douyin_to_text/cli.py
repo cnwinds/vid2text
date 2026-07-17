@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from douyin_to_text.postprocess import correct_transcript, get_active_backend
-from douyin_to_text.stt_engine import transcribe
+from douyin_to_text.stt_engine import default_engine, default_model, list_engines, transcribe
 from douyin_to_text.url_parser import Platform, parse_video_url, resolve_short_url
 from douyin_to_text.video_fetcher import fetch_and_download, fetch_metadata
 from douyin_to_text.yt_dlp_fetcher import (
@@ -49,14 +49,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--stt-engine",
-        choices=["whisper", "faster-whisper"],
-        default="whisper",
-        help="语音转文字引擎（默认 whisper）",
+        choices=list_engines(),
+        default=default_engine(),
+        help=f"语音转文字引擎（默认 {default_engine()}）",
     )
     p.add_argument(
         "--whisper-model",
-        default="base",
-        help="Whisper 模型大小：tiny/base/small/medium（默认 base）",
+        default=default_model(),
+        help=f"STT 模型名称（默认 {default_model()}）",
     )
     p.add_argument(
         "--keep-media",
