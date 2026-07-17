@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.cache/
+debug/
+output/*.mp4
+output/*.wav
+*.egg-info/
+.venv/
+venv/
+data/
+*.db
+
+.env
+.env.*
+output/
+page.html
+video_page.html
