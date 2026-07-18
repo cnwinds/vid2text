@@ -3,11 +3,65 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
+from pathlib import Path
 from typing import Any
 
+from douyin_to_text.pipeline import _download_url_from_ytdlp_info
+from douyin_to_text.pipeline_resume import find_douyin_artifacts
 from douyin_to_text.url_parser import parse_video_url, resolve_short_url
+from douyin_to_text.yt_dlp_fetcher import download_video as ytdlp_download_video
+from douyin_to_text.yt_dlp_fetcher import extract_info
 from web import db
 from web.rate_limit import RateLimitError
+
+logger = logging.getLogger(__name__)
+
+WORK_DIR = Path(__file__).resolve().parent.parent / "data" / "work"
+
+
+def _duration_from_work_cache(row: dict) -> float:
+    """从 work 目录缓存音/视频探测时长（用于旧记录回填）。"""
+    from douyin_to_text.pipeline_resume import find_douyin_artifacts, find_ytdlp_artifacts
+    from douyin_to_text.progress_metrics import probe_media
+
+    video_id = (row.get("video_id") or "").strip()
+    platform = (row.get("platform") or "").strip()
+    if not video_id:
+        return 0.0
+    if platform == "douyin":
+        artifacts = find_douyin_artifacts(WORK_DIR, video_id)
+        path = artifacts.audio or artifacts.video
+    else:
+        artifacts = find_ytdlp_artifacts(WORK_DIR, video_id)
+        path = artifacts.audio
+    if not path:
+        return 0.0
+    return float(probe_media(path).get("duration_sec") or 0)
+
+
+def resolve_duration_sec(row: dict, *, persist: bool = False) -> float:
+    """解析任务时长：库字段 → progress_metrics →（仅 persist 时）本地缓存探测。"""
+    dur = float(row.get("duration_sec") or 0)
+    if dur <= 0:
+        metrics = _parse_progress_metrics(row.get("progress_metrics"))
+        dur = float(metrics.get("duration_sec") or 0)
+    if dur <= 0 and persist:
+        dur = _duration_from_work_cache(row)
+    if dur > 0 and persist and float(row.get("duration_sec") or 0) <= 0:
+        db.update_task(int(row["id"]), duration_sec=dur)
+        row["duration_sec"] = dur
+    return dur
+
+
+def enrich_task_duration(row: dict | None, *, persist: bool = False) -> dict | None:
+    if not row:
+        return None
+    dur = resolve_duration_sec(row, persist=persist)
+    if dur > 0:
+        row["duration_sec"] = dur
+    return row
 
 
 def resolve_and_parse(url: str):
@@ -86,6 +140,7 @@ def row_to_subtitle(row: dict, *, cached: bool = False, base_url: str = "") -> d
     req_id = row["id"]
     prefix = base_url.rstrip("/")
     metrics = _parse_progress_metrics(row.get("progress_metrics"))
+    duration_sec = resolve_duration_sec(row)
 
     video = {
         "url": row["video_url"],
@@ -93,6 +148,10 @@ def row_to_subtitle(row: dict, *, cached: bool = False, base_url: str = "") -> d
         "video_id": row["video_id"],
         "title": row.get("title") or "",
         "description": row.get("description") or "",
+        "author_name": row.get("author_name") or "",
+        "avatar_url": row.get("avatar_url") or "",
+        "download_url": row.get("download_url") or "",
+        "duration_sec": duration_sec,
     }
 
     if status == "done" and (corrected or raw):
@@ -173,6 +232,119 @@ def subtitle_http_status(payload: dict) -> int:
 def find_by_url(url: str) -> dict | None:
     parsed = resolve_and_parse(url)
     return db.find_by_platform_video(parsed.platform.value, parsed.video_id)
+
+
+def _cookies_path_for_task(task: dict) -> Path | None:
+    """优先使用设置里的平台 Cookie。"""
+    platform = (task.get("platform") or "").lower()
+    key = {
+        "douyin": "douyin_cookies",
+        "bilibili": "bilibili_cookies",
+        "youtube": "youtube_cookies",
+    }.get(platform)
+    if key:
+        raw = (db.get_setting(key, "") or "").strip()
+        if raw:
+            from douyin_to_text.author_feed import write_cookiefile
+
+            domain = {
+                "douyin": ".douyin.com",
+                "bilibili": ".bilibili.com",
+                "youtube": ".youtube.com",
+            }.get(platform, ".youtube.com")
+            path = write_cookiefile(raw, domain=domain)
+            if path:
+                return path
+    return None
+
+
+def resolve_download_url(task_id: int) -> tuple[str, str]:
+    """解析并持久化视频直链，返回 (download_url, error_message)。"""
+    row = db.get_task(task_id)
+    if not row:
+        return "", "请求不存在"
+
+    existing = (row.get("download_url") or "").strip()
+    if existing:
+        return existing, ""
+
+    platform = (row.get("platform") or "").lower()
+    video_url = row["video_url"]
+    video_id = row["video_id"]
+
+    try:
+        if platform == "douyin":
+            from douyin_to_text.video_fetcher import fetch_metadata
+
+            meta = fetch_metadata(video_id, headless=True)
+            url = (meta.video_url or "").strip()
+        elif platform in ("bilibili", "youtube"):
+            cookies = _cookies_path_for_task(row)
+            cookies_arg = str(cookies) if cookies else None
+            meta = extract_info(video_url, cookies=cookies_arg)
+            url = _download_url_from_ytdlp_info(meta.raw_info)
+        else:
+            return "", f"暂不支持平台 {platform} 的直链解析"
+
+        if not url:
+            return "", "未能解析视频直链"
+
+        db.update_task(task_id, download_url=url)
+        return url, ""
+    except Exception as exc:
+        logger.warning("resolve download_url failed task #%s: %s", task_id, exc)
+        return "", str(exc)
+
+
+def _safe_video_filename(title: str, video_id: str) -> str:
+    base = re.sub(r'[\\/:*?"<>|\s]+', "_", (title or "").strip()).strip("._")
+    base = (base[:72] if base else video_id) or video_id
+    return f"{base}.mp4"
+
+
+def prepare_video_file(task_id: int) -> tuple[Path, str]:
+    """准备可下载的视频文件（带 Referer/Cookie），返回 (path, download_filename)。"""
+    row = db.get_task(task_id)
+    if not row:
+        raise FileNotFoundError("请求不存在")
+
+    status = row.get("status")
+    if status not in ("done", "failed"):
+        raise ValueError("任务尚未完成，暂不可下载视频")
+
+    platform = (row.get("platform") or "").lower()
+    video_id = row["video_id"]
+    video_url = row["video_url"]
+    filename = _safe_video_filename(row.get("title") or "", video_id)
+    work_dir = WORK_DIR
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    if platform == "douyin":
+        from douyin_to_text.video_fetcher import download_video, fetch_metadata
+
+        artifacts = find_douyin_artifacts(work_dir, video_id)
+        if artifacts.video:
+            return artifacts.video, filename
+
+        meta = fetch_metadata(video_id, headless=True)
+        video_path = work_dir / f"{video_id}.mp4"
+        download_video(
+            meta.video_url,
+            video_path,
+            referer=f"https://www.douyin.com/video/{video_id}",
+        )
+        cdn = (meta.video_url or "").strip()
+        if cdn:
+            db.update_task(task_id, download_url=cdn)
+        return video_path, filename
+
+    if platform in ("bilibili", "youtube"):
+        cookies = _cookies_path_for_task(row)
+        cookies_arg = str(cookies) if cookies else None
+        path = ytdlp_download_video(video_url, work_dir, video_id, cookies=cookies_arg)
+        return path, filename
+
+    raise ValueError(f"暂不支持平台 {platform} 的视频下载")
 
 
 def rate_limit_payload(active: dict, base_url: str) -> dict:

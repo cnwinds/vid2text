@@ -2,14 +2,12 @@ const form = document.getElementById("submit-form");
 const urlInput = document.getElementById("url-input");
 const submitBtn = document.getElementById("submit-btn");
 const statusMsg = document.getElementById("status-msg");
-const resultSection = document.getElementById("result-section");
-const resultsList = document.getElementById("resultsList");
+const taskModal = document.getElementById("task-modal");
+const taskModalBody = document.getElementById("task-modal-body");
+const taskModalFoot = document.getElementById("task-modal-foot");
+const taskModalTitle = document.getElementById("task-modal-title");
 const historyList = document.getElementById("history-list");
 const refreshHistoryBtn = document.getElementById("refresh-history");
-const procPanel = document.getElementById("procPanel");
-const procCanvas = document.getElementById("procCanvas");
-const progFill = document.getElementById("progFill");
-const stages = document.querySelectorAll(".stage");
 
 let pollTimer = null;
 /** 结果区当前展示的任务 */
@@ -19,6 +17,8 @@ let pollingTaskId = null;
 /** @deprecated 兼容重试按钮，等同 viewingTaskId */
 let currentTaskId = null;
 let procAnim = null;
+let procAnimTaskId = null;
+let progressHighWater = { taskId: null, pct: 0, stageIdx: -1 };
 let animStageIdx = 0;
 let metricTarget = { activity: 0.15, cpu: 0, network_kbps: 0, kind: "idle", detail: "" };
 let metricDisplay = { activity: 0.15, cpu: 0, network_kbps: 0, kind: "idle", detail: "" };
@@ -36,6 +36,48 @@ const PIPELINE_STEPS = [
 ];
 
 const STEP_INDEX = Object.fromEntries(PIPELINE_STEPS.map((s, i) => [s.key, i]));
+
+function taskIsActive(status) {
+  return status === "pending" || status === "processing";
+}
+
+function getProcElements() {
+  const panel = taskModalBody?.querySelector(".task-proc-panel");
+  if (!panel) return null;
+  return {
+    panel,
+    canvas: panel.querySelector(".proc-canvas"),
+    progFill: panel.querySelector(".progress-fill"),
+    progPct: panel.querySelector(".progress-bar-pct"),
+    progLabel: panel.querySelector(".progress-bar-label"),
+    stages: panel.querySelectorAll(".stage"),
+  };
+}
+
+function buildProcessingPanelHtml() {
+  const steps = PIPELINE_STEPS.map(
+    (s) => `
+        <div class="stage" data-step="${s.key}">
+          <span class="stage-name">${s.label}</span>
+          <span class="stage-meta" data-meta></span>
+        </div>`
+  ).join("");
+  return `
+    <div class="processing-panel task-proc-panel">
+      <p class="section-label">转码中</p>
+      <div class="proc-canvas-wrap">
+        <canvas class="proc-canvas" aria-hidden="true"></canvas>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-bar-head">
+          <span class="progress-bar-label">排队中</span>
+          <span class="progress-bar-pct">0%</span>
+        </div>
+        <div class="progress-track"><div class="progress-fill"></div></div>
+      </div>
+      <div class="stage-row">${steps}</div>
+    </div>`;
+}
 
 const STEP_DEFAULT_METRICS = {
   parse: { kind: "idle", activity: 0.15 },
@@ -117,7 +159,8 @@ function formatStageMeta(step, metrics) {
 
 function resetStageMetas() {
   stageMetaCache = {};
-  stages.forEach((el) => {
+  const { stages: stageEls } = getProcElements() || {};
+  (stageEls || []).forEach((el) => {
     const meta = el.querySelector("[data-meta]");
     if (meta) meta.textContent = "";
   });
@@ -130,7 +173,8 @@ function updateStageMetas(metrics, activeIdx, status) {
     if (text) stageMetaCache[key] = text;
   }
 
-  stages.forEach((el, i) => {
+  const { stages: stageEls } = getProcElements() || {};
+  (stageEls || []).forEach((el, i) => {
     const meta = el.querySelector("[data-meta]");
     if (!meta) return;
     const key = el.dataset.step;
@@ -154,9 +198,10 @@ function setMetricTarget(metrics) {
 
 function lerpMetrics() {
   const k = 0.12;
+  const kFast = 0.22;
   metricDisplay.activity += (metricTarget.activity - metricDisplay.activity) * k;
-  metricDisplay.cpu += (metricTarget.cpu - metricDisplay.cpu) * k;
-  metricDisplay.network_kbps += (metricTarget.network_kbps - metricDisplay.network_kbps) * k;
+  metricDisplay.cpu += (metricTarget.cpu - metricDisplay.cpu) * kFast;
+  metricDisplay.network_kbps += (metricTarget.network_kbps - metricDisplay.network_kbps) * kFast;
   metricDisplay.kind = metricTarget.kind;
   metricDisplay.detail = metricTarget.detail;
 }
@@ -172,6 +217,15 @@ const SUBTITLES_API = "/api/v1/subtitles";
 
 const RETRY_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.36M21 3v6h-6"/></svg>';
+
+const ICON_COPY =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
+const ICON_DOWNLOAD =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>';
+
+const ICON_EXTERNAL =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></svg>';
 
 /* ================= decorative: hero wave（单 canvas，避免几十个 DOM+阴影动画卡死） ================= */
 (function initHeroWave() {
@@ -433,106 +487,365 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-function renderTask(task, animate = false) {
-  if (!resultSection || !resultsList) return;
-  resultSection.hidden = false;
-  viewingTaskId = task.id;
-  currentTaskId = task.id;
+function histStatusClass(status) {
+  if (status === "done") return "hist-done";
+  if (status === "failed") return "hist-fail";
+  if (status === "pending") return "hist-pending";
+  return "hist-processing";
+}
 
-  const title = task.title || task.video_url;
+async function copyToClipboard(text, btn) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  try {
+    await navigator.clipboard.writeText(value);
+    if (btn) {
+      const label = btn.querySelector("span");
+      if (label) {
+        const orig = label.textContent;
+        label.textContent = "已复制";
+        btn.disabled = true;
+        setTimeout(() => {
+          label.textContent = orig;
+          btn.disabled = false;
+        }, 1200);
+      } else {
+        const origTitle = btn.title;
+        btn.title = "已复制";
+        btn.disabled = true;
+        setTimeout(() => {
+          btn.title = origTitle;
+          btn.disabled = false;
+        }, 1200);
+      }
+    } else {
+      showStatus("已复制到剪贴板");
+    }
+    return true;
+  } catch {
+    showStatus("复制失败，请手动复制");
+    return false;
+  }
+}
+
+function canDownloadVideo(status) {
+  return status === "done" || status === "failed";
+}
+
+function taskTranscriptText(task) {
+  return String(task.corrected_transcript || task.raw_transcript || "").trim();
+}
+
+function historyTranscriptText(view) {
+  return taskTranscriptText(view);
+}
+
+function hasHistoryTranscript(view) {
+  return view.status === "done" && !!historyTranscriptText(view);
+}
+
+function taskVideoDownloadApi(taskId) {
+  return `${SUBTITLES_API}/${taskId}/download`;
+}
+
+async function triggerVideoDownload(taskId, btn) {
+  if (btn) btn.disabled = true;
+  showStatus("正在准备视频（首次可能需要几十秒）…");
+  try {
+    const checkRes = await fetch(`${taskVideoDownloadApi(taskId)}?check=1`);
+    if (!checkRes.ok) {
+      const data = await checkRes.json().catch(() => ({}));
+      throw new Error(data.detail || `无法下载（HTTP ${checkRes.status}）`);
+    }
+    window.location.assign(taskVideoDownloadApi(taskId));
+    showStatus("下载已开始，请查看浏览器下载栏");
+  } catch (err) {
+    showStatus(err.message || "下载失败");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function histActionBtn(kind, title, iconSvg) {
+  return `<button type="button" class="hist-act hist-act-${kind}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${iconSvg}</button>`;
+}
+
+function fmtDurationSec(sec) {
+  const total = Math.max(0, Math.round(Number(sec) || 0));
+  if (!total) return "";
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function taskDurationSec(task) {
+  const direct = Number(task.duration_sec);
+  if (direct > 0) return direct;
+  const m = task.progress_metrics;
+  if (m && typeof m === "object" && Number(m.duration_sec) > 0) {
+    return Number(m.duration_sec);
+  }
+  return 0;
+}
+
+function taskDurationLabel(task) {
+  return fmtDurationSec(taskDurationSec(task));
+}
+
+function buildTaskHeroHtml(task) {
+  const author = historyAuthorLabel(task) || "未知播主";
+  const title = task.title || task.video_url || `任务 #${task.id}`;
   const badgeCls = statusBadgeClass(task.status);
   const label = STATUS_LABEL[task.status] || task.status;
+  const durationLabel = taskDurationLabel(task);
+  const durationHtml = durationLabel
+    ? `<span class="td-hero-duration">${escapeHtml(durationLabel)}</span>`
+    : "";
+  return `
+    <header class="td-hero">
+      ${renderPlatformAvatarCol(task.platform, historyAvatarInner(task))}
+      <div class="td-hero-body">
+        <h3 class="td-hero-title">${escapeHtml(title)}</h3>
+        <p class="td-hero-meta">
+          <span class="td-chip td-chip-plat">${escapeHtml(platformLabel(task.platform))}</span>
+          <span class="status-badge ${badgeCls}">${escapeHtml(label)}</span>
+          ${durationHtml}
+          <span class="td-hero-author">${escapeHtml(author)}</span>
+          <span class="td-hero-task-id">#${escapeHtml(String(task.id))}</span>
+        </p>
+      </div>
+    </header>`;
+}
 
-  const desc = task.description || "（无描述）";
-  const raw = task.raw_transcript || "（暂无）";
-  const corrected = task.corrected_transcript || "（暂无）";
+function buildTaskActionBarHtml(task) {
+  const transcript = taskTranscriptText(task);
+  const parts = [];
+  if (task.status === "done" && transcript) {
+    parts.push(
+      `<button type="button" class="td-act td-act-primary" id="modal-copy-text-btn">${ICON_COPY}<span>复制文稿</span></button>`
+    );
+  }
+  if (canDownloadVideo(task.status)) {
+    parts.push(
+      `<button type="button" class="td-act" id="modal-dl-btn">${ICON_DOWNLOAD}<span>下载视频</span></button>`
+    );
+  }
+  parts.push(
+    `<a class="td-act td-act-link" href="${escapeHtml(task.video_url)}" target="_blank" rel="noopener">${ICON_EXTERNAL}<span>原视频</span></a>`
+  );
+  return `<div class="td-action-bar">${parts.join("")}</div>`;
+}
 
+function buildTranscriptSectionHtml(task) {
+  if (taskIsActive(task.status)) return "";
+  const text = taskTranscriptText(task);
+  if (!text) {
+    return `
+      <section class="td-section td-section-empty">
+        <p>暂无口播文稿${task.status === "failed" ? "（提取失败）" : ""}</p>
+      </section>`;
+  }
+  return `
+    <section class="td-section td-section-hero">
+      <div class="td-section-head">
+        <h4 class="td-section-title">口播文稿</h4>
+        <span class="td-meta-pill">${text.length.toLocaleString()} 字</span>
+      </div>
+      <div class="td-transcript">${escapeHtml(text)}</div>
+    </section>`;
+}
+
+function buildTaskExtrasHtml(task) {
+  const blocks = [];
+  const raw = (task.raw_transcript || "").trim();
+  const corrected = (task.corrected_transcript || "").trim();
+  if (raw && corrected && raw !== corrected) {
+    blocks.push(`
+      <details class="td-details">
+        <summary>原始转录</summary>
+        <div class="td-details-body">${escapeHtml(raw)}</div>
+      </details>`);
+  }
+  const desc = (task.description || "").trim();
+  if (desc) {
+    blocks.push(`
+      <details class="td-details">
+        <summary>视频描述</summary>
+        <div class="td-details-body">${escapeHtml(desc)}</div>
+      </details>`);
+  }
+  if (!blocks.length) return "";
+  return `<div class="td-extras">${blocks.join("")}</div>`;
+}
+
+function buildTaskModalFootHtml(task) {
+  if (task.status !== "failed") return "";
+  return `<div class="m-modal-actions"><button type="button" class="td-act td-act-danger" id="modal-retry-btn">${RETRY_SVG}<span>重新提取</span></button></div>`;
+}
+
+function syncTaskModalFoot(task) {
+  if (!taskModalFoot) return;
+  const html = buildTaskModalFootHtml(task);
+  taskModalFoot.innerHTML = html;
+  taskModalFoot.hidden = !html;
+}
+
+function historyAuthorLabel(view) {
+  return String(view.author_name || "").trim();
+}
+
+function historyTitleLabel(view) {
+  const title = String(view.title || "").trim();
+  if (title) return title;
+  return "未命名作品";
+}
+
+function historyAvatarInner(view) {
+  const name = historyAuthorLabel(view) || historyTitleLabel(view);
+  return renderAuthorAvatarInner(name, view.avatar_url, view.video_id);
+}
+
+function buildTaskDetailHtml(task) {
   let errorHtml = "";
   if (task.status === "failed" && task.error_message) {
     errorHtml = `
-      <div class="field">
-        <div class="field-box error">
-          <span class="who">错误</span>
-          <span>${escapeHtml(task.error_message)}</span>
-        </div>
+      <div class="td-alert td-alert-error" role="alert">
+        <strong>提取失败</strong>
+        <p>${escapeHtml(task.error_message)}</p>
       </div>`;
   }
 
-  const retryHtml =
-    task.status === "failed"
-      ? `<button type="button" class="retry-btn" id="retry-btn">${RETRY_SVG} 重试</button>`
-      : "";
+  const procHtml = taskIsActive(task.status) ? buildProcessingPanelHtml() : "";
+  const heroHtml = buildTaskHeroHtml(task);
+  const actionBarHtml = taskIsActive(task.status) ? "" : buildTaskActionBarHtml(task);
+  const transcriptHtml = buildTranscriptSectionHtml(task);
+  const extrasHtml = buildTaskExtrasHtml(task);
 
-  resultsList.innerHTML = `
-    <div class="result-card${animate ? " enter" : ""}" data-task-id="${task.id}">
-      <div class="result-head">
-        <span class="platform-tag">${escapeHtml(task.platform)}</span>
-        <span>·</span>
-        <span>${escapeHtml(task.video_id)}</span>
-        <span class="status-badge ${badgeCls}">${escapeHtml(label)}</span>
+  return `
+    <div class="task-detail${taskIsActive(task.status) ? " is-live" : ""}" data-task-id="${task.id}">
+      ${procHtml}
+      <div class="task-detail-body">
+        ${heroHtml}
+        ${errorHtml}
+        ${actionBarHtml}
+        ${transcriptHtml}
+        ${extrasHtml}
       </div>
-      <p class="video-url">
-        <a href="${escapeHtml(task.video_url)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>
-      </p>
-      <div class="field">
-        <span class="field-label">视频描述</span>
-        <div class="${fieldBoxClass(task.description, "（无描述）")}">${escapeHtml(desc)}</div>
-      </div>
-      <div class="field">
-        <span class="field-label">原始转录</span>
-        <div class="${fieldBoxClass(task.raw_transcript, "（暂无）")}">${escapeHtml(raw)}</div>
-      </div>
-      <div class="field">
-        <span class="field-label">修正后文本</span>
-        <div class="${fieldBoxClass(task.corrected_transcript, "（暂无）")}">${escapeHtml(corrected)}</div>
-      </div>
-      ${errorHtml}
-      ${retryHtml}
     </div>`;
+}
 
-  const retryBtn = document.getElementById("retry-btn");
+function bindTaskModalActions(task) {
+  const retryBtn = document.getElementById("modal-retry-btn");
   if (retryBtn) {
     retryBtn.addEventListener("click", (e) => {
       miniBurst(e.clientX, e.clientY);
-      if (currentTaskId) handleRetry(currentTaskId);
+      handleRetry(task.id);
+    });
+  }
+
+  const copyBtn = document.getElementById("modal-copy-text-btn");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const text = taskTranscriptText(task);
+      if (text) copyToClipboard(text, copyBtn);
+    });
+  }
+
+  const dlBtn = document.getElementById("modal-dl-btn");
+  if (dlBtn) {
+    dlBtn.addEventListener("click", (e) => {
+      miniBurst(e.clientX, e.clientY);
+      triggerVideoDownload(task.id, dlBtn);
     });
   }
 }
 
+function openTaskModal(task, animate = false) {
+  if (!taskModal || !taskModalBody) return;
+  viewingTaskId = task.id;
+  currentTaskId = task.id;
+  if (taskModalTitle) taskModalTitle.textContent = "任务详情";
+  taskModalBody.innerHTML = buildTaskDetailHtml(task);
+  syncTaskModalFoot(task);
+  if (animate) {
+    const detail = taskModalBody.querySelector(".task-detail");
+    detail?.classList.add("enter");
+  }
+  bindTaskModalActions(task);
+  taskModal.hidden = false;
+  taskModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("m-modal-open");
+  if (taskIsActive(task.status)) {
+    scheduleProcAnim(task);
+  } else {
+    stopProcAnim();
+  }
+}
+
+function closeTaskModal() {
+  if (!taskModal) return;
+  stopProcAnim();
+  if (taskModalFoot) {
+    taskModalFoot.innerHTML = "";
+    taskModalFoot.hidden = true;
+  }
+  taskModal.hidden = true;
+  taskModal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("m-modal-open");
+}
+
+function initTaskModal() {
+  if (!taskModal) return;
+  taskModal.querySelectorAll("[data-modal-close]").forEach((el) => {
+    el.addEventListener("click", closeTaskModal);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !taskModal.hidden) closeTaskModal();
+  });
+}
+
+function renderTask(task, animate = false) {
+  openTaskModal(task, animate);
+}
+
 function patchTaskStatus(task) {
-  const card = resultsList.querySelector(".result-card");
-  if (!card || card.dataset.taskId !== String(task.id)) {
-    renderTask(task);
+  const inModal =
+    taskModal &&
+    !taskModal.hidden &&
+    viewingTaskId === task.id &&
+    taskModalBody?.querySelector(`.task-detail[data-task-id="${task.id}"]`);
+  if (!inModal) {
+    if (
+      viewingTaskId === task.id &&
+      (task.status === "done" || task.status === "failed")
+    ) {
+      openTaskModal(task);
+    }
     return;
   }
-  const badge = card.querySelector(".status-badge");
+  const badge = inModal.querySelector(".td-hero-meta .status-badge");
   if (badge) {
     badge.className = `status-badge ${statusBadgeClass(task.status)}`;
     badge.textContent = STATUS_LABEL[task.status] || task.status;
   }
 
-  // 处理中即可更新标题 / 描述 / 原始转录（STT 完成后不必等全部结束）
-  const titleEl = card.querySelector(".video-url a");
-  if (titleEl && task.title) {
-    titleEl.textContent = task.title;
+  const transcriptEl = inModal.querySelector(".td-transcript");
+  const text = taskTranscriptText(task);
+  if (transcriptEl && text) {
+    transcriptEl.textContent = text;
+    const pill = inModal.querySelector(".td-meta-pill");
+    if (pill) pill.textContent = `${text.length.toLocaleString()} 字`;
   }
 
-  const fields = card.querySelectorAll(".field");
-  fields.forEach((field) => {
-    const label = field.querySelector(".field-label")?.textContent?.trim();
-    const box = field.querySelector(".field-box");
-    if (!box || !label) return;
-    if (label === "视频描述" && task.description) {
-      box.className = fieldBoxClass(task.description, "（无描述）");
-      box.textContent = task.description;
-    } else if (label === "原始转录" && task.raw_transcript) {
-      box.className = fieldBoxClass(task.raw_transcript, "（暂无）");
-      box.textContent = task.raw_transcript;
-    } else if (label === "修正后文本" && task.corrected_transcript) {
-      box.className = fieldBoxClass(task.corrected_transcript, "（暂无）");
-      box.textContent = task.corrected_transcript;
-    }
-  });
+  if (task.status === "done" || task.status === "failed") {
+    stopProcAnim();
+    taskModalBody.innerHTML = buildTaskDetailHtml(task);
+    syncTaskModalFoot(task);
+    bindTaskModalActions(task);
+  }
 }
 
 function subtitleToView(data) {
@@ -541,6 +854,7 @@ function subtitleToView(data) {
   let status = "processing";
   if (data.ready) status = "done";
   else if (data.error) status = "failed";
+  else if (data.processing?.status === "failed") status = "failed";
   else if (data.processing?.status === "pending") status = "pending";
 
   return {
@@ -551,6 +865,10 @@ function subtitleToView(data) {
     video_url: v.url,
     title: v.title,
     description: v.description,
+    author_name: v.author_name || "",
+    avatar_url: v.avatar_url || "",
+    download_url: v.download_url || "",
+    duration_sec: Number(v.duration_sec) || 0,
     raw_transcript: sub.raw || "",
     corrected_transcript: sub.corrected || "",
     error_message: data.error || "",
@@ -613,10 +931,38 @@ async function retryTask(taskId) {
   return subtitleToView(data);
 }
 
+function resetProgressHighWater(taskId) {
+  progressHighWater = { taskId, pct: 0, stageIdx: -1 };
+}
+
+function computeProgressPct(task, activeIdx, status) {
+  const total = PIPELINE_STEPS.length;
+  if (status === "done") return 100;
+  if (activeIdx < 0) return 2;
+  const stepSpan = 92 / total;
+  const base = activeIdx * stepSpan;
+  let sub = 0;
+  const step = PIPELINE_STEPS[activeIdx]?.key;
+  const m = task.progress_metrics && typeof task.progress_metrics === "object" ? task.progress_metrics : {};
+  if (step === "download" && m.pct != null && Number(m.pct) > 0) {
+    sub = (Math.min(100, Number(m.pct)) / 100) * stepSpan * 0.88;
+  } else if ((step === "stt" || step === "extract_audio") && Number(m.cpu) > 0) {
+    sub = (Math.min(100, Number(m.cpu)) / 100) * stepSpan * 0.8;
+  } else if (Number(m.activity) > 0) {
+    sub = Math.min(1, Number(m.activity)) * stepSpan * 0.45;
+  }
+  return Math.min(95, base + stepSpan * 0.1 + sub);
+}
+
 function updateProcProgress(task) {
+  const proc = getProcElements();
   const { progress_step: step, status } = task;
   let activeIdx = -1;
   let metrics = null;
+
+  if (progressHighWater.taskId !== task.id) {
+    resetProgressHighWater(task.id);
+  }
 
   if (status === "done") {
     activeIdx = PIPELINE_STEPS.length;
@@ -636,31 +982,42 @@ function updateProcProgress(task) {
     setMetricTarget(metrics);
   }
 
+  if (activeIdx >= 0 && status !== "done") {
+    activeIdx = Math.max(progressHighWater.stageIdx, activeIdx);
+    progressHighWater.stageIdx = activeIdx;
+  }
+
   animStageIdx = Math.max(0, activeIdx);
 
-  stages.forEach((el, i) => {
-    el.classList.remove("active", "done");
-    if (status === "done" || i < activeIdx) {
-      el.classList.add("done");
-    } else if (i === activeIdx) {
-      el.classList.add("active");
-    }
-  });
+  if (proc?.stages) {
+    proc.stages.forEach((el, i) => {
+      el.classList.remove("active", "done");
+      if (status === "done" || i < activeIdx) {
+        el.classList.add("done");
+      } else if (i === activeIdx) {
+        el.classList.add("active");
+      }
+    });
+  }
 
   updateStageMetas(metrics, activeIdx, status);
 
-  const total = PIPELINE_STEPS.length;
-  const pct =
-    status === "done"
-      ? 100
-      : activeIdx < 0
-        ? 2
-        : Math.min(95, ((activeIdx + 1) / total) * 92);
-  progFill.style.width = `${pct}%`;
+  let pct = computeProgressPct(task, activeIdx, status);
+  if (status !== "done") {
+    pct = Math.max(progressHighWater.pct, pct);
+  }
+  progressHighWater.pct = pct;
+  const stepLabel = activeIdx >= 0 ? PIPELINE_STEPS[activeIdx]?.label : "排队中";
+  if (proc?.progFill) {
+    proc.progFill.style.width = `${pct}%`;
+    proc.progFill.classList.toggle("is-complete", status === "done" || pct >= 100);
+  }
+  if (proc?.progPct) proc.progPct.textContent = `${Math.round(pct)}%`;
+  if (proc?.progLabel) {
+    proc.progLabel.textContent = status === "done" ? "已完成" : stepLabel;
+  }
 
   if (status === "pending" || status === "processing") {
-    const stepLabel =
-      activeIdx >= 0 ? PIPELINE_STEPS[activeIdx]?.label : "排队中";
     let statusText = `任务 #${task.id} · ${stepLabel}…`;
     if (task.progress_notice) {
       statusText += ` · ${task.progress_notice.replace(/^resume:/, "")}`;
@@ -669,46 +1026,76 @@ function updateProcProgress(task) {
   }
 }
 
+function stopProcAnim() {
+  if (procAnim) {
+    procAnim();
+    procAnim = null;
+  }
+  procAnimTaskId = null;
+}
+
 function stopPolling() {
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
   }
   pollingTaskId = null;
-  if (procAnim) {
-    procAnim();
-    procAnim = null;
-  }
+}
+
+function scheduleProcAnim(task) {
+  if (!task || !taskIsActive(task.status)) return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (viewingTaskId !== task.id) return;
+      if (!getProcElements()?.canvas) return;
+      if (procAnim && procAnimTaskId === task.id) {
+        updateProcProgress(task);
+        return;
+      }
+      procAnimTaskId = task.id;
+      if (progressHighWater.taskId !== task.id) {
+        resetProgressHighWater(task.id);
+      }
+      startProcessingAnim();
+      updateProcProgress(task);
+    });
+  });
 }
 
 function startProcessingAnim() {
-  // 只清动画循环，不要走 stopProcessingAnim（会误藏面板）
-  if (procAnim) {
-    procAnim();
-    procAnim = null;
-  }
-  if (!procPanel || !procCanvas || !progFill) return;
-  procPanel.hidden = false;
-  stages.forEach((s) => s.classList.remove("active", "done"));
-  progFill.style.width = "0%";
+  stopProcAnim();
+  procAnimTaskId = viewingTaskId;
+  const proc = getProcElements();
+  if (!proc?.canvas || !proc.progFill) return;
+  proc.stages.forEach((s) => s.classList.remove("active", "done"));
+  const resumePct = progressHighWater.taskId === viewingTaskId ? progressHighWater.pct : 0;
+  proc.progFill.style.width = `${resumePct}%`;
+  proc.progFill.classList.remove("is-complete");
+  if (proc.progPct) proc.progPct.textContent = `${Math.round(resumePct)}%`;
+  if (proc.progLabel) proc.progLabel.textContent = "排队中";
   animStageIdx = 0;
   metricTarget = { activity: 0.1, cpu: 0, network_kbps: 0, kind: "idle", detail: "排队中…", facts: [], title_snip: "" };
   metricDisplay = { ...metricTarget };
   resetStageMetas();
   updateStageMetas({ detail: "排队中" }, 0, "pending");
 
-  const ctx = procCanvas.getContext("2d", { alpha: false });
+  const canvas = proc.canvas;
+  const ctx = canvas.getContext("2d", { alpha: false });
   function fitCanvas() {
-    const cw = procCanvas.clientWidth || 300;
-    const ch = procCanvas.clientHeight || 160;
-    if (procCanvas.width !== cw) procCanvas.width = cw;
-    if (procCanvas.height !== ch) procCanvas.height = ch;
+    const wrap = canvas.parentElement;
+    const cw = canvas.clientWidth || wrap?.clientWidth || 300;
+    const ch = canvas.clientHeight || 160;
+    const w = Math.max(2, Math.floor(cw));
+    const h = Math.max(2, Math.floor(ch));
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
   }
   fitCanvas();
+  ctx.fillStyle = "#05070a";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   const onResize = () => fitCanvas();
   window.addEventListener("resize", onResize);
 
-  const MAX_PARTICLES = 40;
   const FRAME_MS = 1000 / 30;
   let particles = [];
   let spawnAcc = 0;
@@ -726,33 +1113,55 @@ function startProcessingAnim() {
     correct: { r: 255, g: 160, b: 120 },
   };
 
+  /** 各阶段主指标：network=带宽 kbps，cpu=占用%，activity=通用活动度 */
+  const STAGE_METRIC = {
+    parse: "activity",
+    fetch_meta: "network",
+    fetch_subtitle: "network",
+    download: "network",
+    extract_audio: "cpu",
+    stt: "cpu",
+    correct: "network",
+  };
+  const NET_FULL_KBPS = 3200;
+  const INTENSITY_FLOOR = 0.16;
+
+  function norm01(value, full) {
+    return Math.min(1, Math.max(0, (Number(value) || 0) / full));
+  }
+
+  function applyIntensityFloor(raw) {
+    return INTENSITY_FLOOR + Math.min(1, Math.max(0, raw)) * (1 - INTENSITY_FLOOR);
+  }
+
   function stageDrive() {
     const step = PIPELINE_STEPS[animStageIdx]?.key || "parse";
-    const cpu = Number(metricDisplay.cpu) || 0;
-    const net = Number(metricDisplay.network_kbps) || 0;
+    const metricKind = STAGE_METRIC[step] || "activity";
+    const cpuNorm = norm01(metricDisplay.cpu, 100);
+    const netNorm = norm01(metricDisplay.network_kbps, NET_FULL_KBPS);
     const act = Math.min(1, Math.max(0, Number(metricDisplay.activity) || 0.2));
-    let intensity = 0.25;
 
-    if (step === "download") {
-      intensity = Math.min(1, 0.15 + Math.min(net, 4000) / 1800);
-    } else if (step === "stt" || step === "extract_audio") {
-      intensity = Math.min(1, 0.15 + Math.min(cpu, 100) / 100);
-    } else if (step === "fetch_meta" || step === "fetch_subtitle" || step === "correct") {
-      intensity = Math.min(1, 0.2 + act * 0.75);
-      if (metricDisplay.kind === "network" && net > 0) {
-        intensity = Math.max(intensity, Math.min(1, 0.2 + Math.min(net, 4000) / 2500));
-      }
-      if (metricDisplay.kind === "cpu" && cpu > 0) {
-        intensity = Math.max(intensity, Math.min(1, 0.2 + Math.min(cpu, 100) / 110));
-      }
+    let raw = 0;
+    if (metricKind === "network") {
+      raw = netNorm;
+    } else if (metricKind === "cpu") {
+      raw = cpuNorm;
     } else {
-      intensity = Math.min(1, 0.15 + act * 0.55);
+      raw = act * 0.5;
     }
 
+    // 指标尚未上报时（如刚进入步骤），用 activity 托底，避免完全静止
+    if (raw < 0.04) {
+      raw = Math.max(raw, act * 0.28);
+    }
+
+    const intensity = applyIntensityFloor(raw);
     const base = STAGE_RGB[step] || STAGE_RGB.parse;
-    const boost = 1 + intensity * 0.12;
+    const boost = 0.7 + intensity * 0.65;
     return {
       intensity,
+      raw,
+      metricKind,
       color: {
         r: Math.min(255, (base.r * boost) | 0),
         g: Math.min(255, (base.g * boost) | 0),
@@ -761,26 +1170,71 @@ function startProcessingAnim() {
     };
   }
 
-  function spawnSoft(drive) {
-    if (particles.length >= MAX_PARTICLES) return;
-    const { intensity, color } = drive;
-    const W = procCanvas.width;
-    const H = procCanvas.height;
-    const room = MAX_PARTICLES - particles.length;
-    const density = Math.min(room, intensity > 0.7 ? 2 : 1);
-    const riseBase = 0.32 + intensity * 1.1;
+  function drawTadpole(ctx, x, y, angle, tailPhase, size, alpha, c, glowAlpha) {
+    const headR = size * 0.42;
+    const tailLen = size * 1.05;
+    const tailW = Math.max(1.2, size * 0.16);
+    const wag = Math.sin(tailPhase * 6.8) * size * 0.14;
 
-    for (let i = 0; i < density; i++) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+
+    if (glowAlpha > 0) {
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${glowAlpha})`;
+      ctx.arc(0, -headR * 0.35, headR * 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(0, headR * 0.08);
+    ctx.quadraticCurveTo(wag, tailLen * 0.48, wag * 0.4, tailLen);
+    ctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},${alpha * 0.82})`;
+    ctx.lineWidth = tailW;
+    ctx.lineCap = "round";
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${alpha})`;
+    ctx.arc(0, -headR * 0.38, headR, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.fillStyle = `rgba(255,255,255,${alpha * 0.14})`;
+    ctx.arc(-headR * 0.2, -headR * 0.52, headR * 0.22, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function spawnSoft(drive) {
+    const { intensity, color } = drive;
+    const W = canvas.width;
+    const H = canvas.height;
+    const cap = Math.round(4 + intensity * 14);
+    if (particles.length >= cap) return;
+    const room = cap - particles.length;
+    const batch = Math.min(room, 1 + (intensity * 2) | 0);
+    const riseBase = 0.18 + intensity * 1.95;
+
+    for (let i = 0; i < batch; i++) {
+      const swayAmp = (0.35 + Math.random() * (0.45 + intensity * 3.0)) * 0.22;
       particles.push({
         x: Math.random() * W,
-        y: H + 4 + Math.random() * 6,
-        vy: -(riseBase + Math.random() * 0.25),
-        vx: (Math.random() - 0.5) * (0.06 + intensity * 0.22),
-        r: 0.7 + Math.random() * (1 + intensity * 0.5),
-        life: 1,
-        fade: 0.008 + Math.random() * 0.004,
-        sway: 0.01 + intensity * 0.012,
+        y: H + 4 + Math.random() * 10,
+        vy: -(riseBase + Math.random() * (0.3 + intensity * 0.85)),
+        drift: (Math.random() - 0.5) * (0.025 + intensity * 0.08),
+        r: (0.55 + Math.random() * (0.5 + intensity * 1.95)) * 5,
+        swayAmp,
+        swayFreq: 0.45 + Math.random() * (1.0 + intensity * 1.5),
+        swayPhase: Math.random() * Math.PI * 2,
+        wobbleAmp: (0.1 + Math.random() * (0.1 + intensity * 0.32)) * 0.22,
+        wobbleFreq: 1.3 + Math.random() * 2.4,
         phase: Math.random() * Math.PI * 2,
+        tailPhase: Math.random() * Math.PI * 2,
+        vxSmooth: (Math.random() - 0.5) * 0.08,
+        vySmooth: -(0.4 + Math.random() * 0.35),
         c: color,
       });
     }
@@ -789,7 +1243,15 @@ function startProcessingAnim() {
   function frame(now) {
     raf = 0;
     if (!running) return;
-    if (document.hidden || procPanel.hidden) return;
+    if (document.hidden) {
+      raf = requestAnimationFrame(frame);
+      return;
+    }
+    const liveProc = getProcElements();
+    if (!liveProc?.canvas || liveProc.canvas !== canvas) {
+      raf = requestAnimationFrame(frame);
+      return;
+    }
     if (now - last < FRAME_MS) {
       raf = requestAnimationFrame(frame);
       return;
@@ -798,8 +1260,8 @@ function startProcessingAnim() {
 
     lerpMetrics();
     fitCanvas();
-    const W = procCanvas.width;
-    const H = procCanvas.height;
+    const W = canvas.width;
+    const H = canvas.height;
     if (W < 2 || H < 2) {
       raf = requestAnimationFrame(frame);
       return;
@@ -808,11 +1270,10 @@ function startProcessingAnim() {
     const drive = stageDrive();
     const { intensity } = drive;
 
-    ctx.fillStyle = "rgba(5,7,9,0.28)";
+    ctx.fillStyle = `rgba(5,7,9,${0.1 + intensity * 0.34})`;
     ctx.fillRect(0, 0, W, H);
 
-    // 强度高约每 3 帧补 1–2 个，低强度更疏
-    const spawnEvery = intensity > 0.65 ? 3 : intensity > 0.35 ? 5 : 7;
+    const spawnEvery = Math.max(1, Math.round(9 - intensity * 7));
     spawnAcc += 1;
     if (spawnAcc >= spawnEvery) {
       spawnAcc = 0;
@@ -822,18 +1283,36 @@ function startProcessingAnim() {
     let write = 0;
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i];
-      p.phase += 0.02 + intensity * 0.015;
-      p.x += p.vx + Math.sin(p.phase) * p.sway;
-      p.y += p.vy;
-      p.life -= p.fade;
-      if (p.life <= 0 || p.y < -12) continue;
+      p.phase += (0.028 + intensity * 0.05) * (0.75 + p.swayFreq * 0.25);
+      p.tailPhase += 0.11 + intensity * 0.14;
+      const sway =
+        Math.sin(p.phase * p.swayFreq + p.swayPhase) * p.swayAmp * (0.35 + intensity * 0.35);
+      const wobble =
+        Math.sin(p.phase * p.wobbleFreq + p.swayPhase * 1.7) *
+        p.wobbleAmp *
+        (0.25 + intensity * 0.35);
+      const dx = p.drift + sway + wobble;
+      const dy = p.vy * (0.65 + intensity * 0.55);
+      p.vxSmooth = p.vxSmooth * 0.78 + dx * 0.22;
+      p.vySmooth = p.vySmooth * 0.78 + dy * 0.22;
+      p.x += dx;
+      p.y += dy;
+      const size = p.r * (0.85 + intensity * 0.45);
+      if (p.y < -size * 1.6) continue;
 
-      const heightFade = Math.max(0.15, Math.min(1, p.y / (H * 0.85)));
-      const alpha = p.life * 0.78 * heightFade;
-      ctx.beginPath();
-      ctx.fillStyle = `rgba(${p.c.r},${p.c.g},${p.c.b},${alpha})`;
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fill();
+      const baseAlpha = 0.38 + intensity * 0.62;
+      const fadeTop = size * 1.8;
+      let alpha = baseAlpha;
+      if (p.y < fadeTop) {
+        alpha = baseAlpha * Math.max(0, p.y / fadeTop);
+        if (alpha <= 0.01) continue;
+      }
+
+      const swimTilt = Math.sin(p.phase * p.swayFreq + p.swayPhase) * 0.42;
+      const angle = Math.atan2(p.vxSmooth, -p.vySmooth) + swimTilt;
+      const glowAlpha = intensity > 0.45 ? alpha * 0.2 * intensity : 0;
+
+      drawTadpole(ctx, p.x, p.y, angle, p.tailPhase, size, alpha, p.c, glowAlpha);
       particles[write++] = p;
     }
     particles.length = write;
@@ -866,24 +1345,21 @@ function startProcessingAnim() {
 }
 
 function stopProcessingAnim(flash = false) {
-  if (procAnim) {
-    procAnim();
-    procAnim = null;
+  const proc = getProcElements();
+  if (flash && proc?.panel) {
+    proc.panel.classList.remove("flash");
+    void proc.panel.offsetWidth;
+    proc.panel.classList.add("flash");
+    proc.stages.forEach((s) => s.classList.remove("active"));
+    proc.stages.forEach((s) => s.classList.add("done"));
+    if (proc.progFill) {
+      proc.progFill.style.width = "100%";
+      proc.progFill.classList.add("is-complete");
+    }
+    if (proc.progPct) proc.progPct.textContent = "100%";
+    if (proc.progLabel) proc.progLabel.textContent = "已完成";
   }
-  if (!procPanel || !progFill) return;
-  if (flash) {
-    procPanel.classList.remove("flash");
-    void procPanel.offsetWidth;
-    procPanel.classList.add("flash");
-    stages.forEach((s) => s.classList.remove("active"));
-    stages.forEach((s) => s.classList.add("done"));
-    progFill.style.width = "100%";
-    setTimeout(() => {
-      procPanel.hidden = true;
-    }, 400);
-  } else {
-    procPanel.hidden = true;
-  }
+  stopProcAnim();
 }
 
 function startPolling(taskId) {
@@ -894,7 +1370,6 @@ function startPolling(taskId) {
     viewingTaskId = taskId;
     currentTaskId = taskId;
   }
-  startProcessingAnim();
   let cardRendered = viewingTaskId === taskId;
 
   const tick = async () => {
@@ -908,6 +1383,7 @@ function startPolling(taskId) {
         if (!cardRendered) {
           renderTask(task);
           cardRendered = true;
+          scheduleProcAnim(task);
         } else if (task.status === "done" || task.status === "failed") {
           renderTask(task, task.status === "done");
         } else {
@@ -922,11 +1398,11 @@ function startPolling(taskId) {
         stopPolling();
         submitBtn.disabled = false;
         loadHistory();
-        if (viewingTaskId === taskId) {
-          stopProcessingAnim(true);
-          hideStatus();
-          renderTask(task, true);
-        } else {
+      if (viewingTaskId === taskId) {
+        stopProcessingAnim(true);
+        hideStatus();
+        setTimeout(() => openTaskModal(task, true), 380);
+      } else {
           stopProcessingAnim(false);
           showStatus(`任务 #${taskId} 已完成（可在历史中查看）`);
         }
@@ -999,7 +1475,6 @@ form.addEventListener("submit", async (e) => {
     renderTask(task);
 
     if (task.status === "done") {
-      stopProcessingAnim(true);
       showStatus(cached ? "命中缓存，直接返回已有结果" : "已完成");
       submitBtn.disabled = false;
       renderTask(task, true);
@@ -1017,114 +1492,92 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
-/** @type {Set<number>} */
-const expandedHistoryIds = new Set();
-
-function setHistoryExpand(block, open) {
-  block.classList.toggle("is-open", open);
-  const head = block.querySelector(".expand-head");
-  const chev = block.querySelector(".expand-chevron");
-  if (head) head.setAttribute("aria-expanded", open ? "true" : "false");
-  if (chev) chev.textContent = open ? "▾" : "▸";
-}
-
-function createHistoryBlock(view) {
-  const block = document.createElement("div");
-  const isOpen = expandedHistoryIds.has(view.id);
-  block.className = `expand-block hist-expand ${histItemClass(view.status)}${isOpen ? " is-open" : ""}`;
-  block.dataset.taskId = view.id;
-
-  const head = document.createElement("button");
-  head.type = "button";
-  head.className = "expand-head";
-  head.setAttribute("aria-expanded", isOpen ? "true" : "false");
-
-  const chev = document.createElement("span");
-  chev.className = "expand-chevron";
-  chev.textContent = isOpen ? "▾" : "▸";
-  chev.setAttribute("aria-hidden", "true");
-
-  const row = document.createElement("div");
-  row.className = "hist-head-row";
-
-  const wave = document.createElement("div");
-  wave.className = "hwave";
-  buildHistWave(wave, randomWaveHeights());
-
-  const tag = document.createElement("span");
-  tag.className = "htag";
-  tag.textContent = view.platform;
-
-  const hurl = document.createElement("span");
-  hurl.className = "hurl";
-  hurl.textContent = view.title || view.video_url;
-  hurl.title = view.video_url;
-
-  const hstatus = document.createElement("span");
-  hstatus.className = "hstatus";
-  hstatus.textContent = STATUS_LABEL[view.status] || view.status;
-
-  row.append(wave, tag, hurl, hstatus);
-  head.append(chev, row);
-
-  const body = document.createElement("div");
-  body.className = "expand-body";
-
-  const descPreview = (view.description || "").trim() || "（无描述）";
-  const errHtml =
-    view.status === "failed" && view.error_message
-      ? `<div class="hist-detail-row"><span class="field-label">错误</span><div class="hist-detail-err">${escapeHtml(view.error_message)}</div></div>`
-      : "";
-
-  body.innerHTML = `
-    <div class="hist-detail-grid">
-      <div class="hist-detail-row">
-        <span class="field-label">链接</span>
-        <div class="hist-detail-url"><a href="${escapeHtml(view.video_url)}" target="_blank" rel="noopener">${escapeHtml(view.video_url)}</a></div>
-      </div>
-      <div class="hist-detail-row">
-        <span class="field-label">视频 ID</span>
-        <div class="hist-detail-url">${escapeHtml(view.video_id || "—")}</div>
-      </div>
-      <div class="hist-detail-row">
-        <span class="field-label">描述</span>
-        <div class="hist-detail-desc">${escapeHtml(descPreview)}</div>
-      </div>
-      ${errHtml}
-    </div>
-    <div class="hist-expand-actions">
-      <button type="button" class="refresh-btn" data-act="view">查看完整结果</button>
-      ${view.status === "failed" ? '<button type="button" class="refresh-btn" data-act="retry">重试</button>' : ""}
-    </div>`;
-
-  head.addEventListener("click", (e) => {
-    if (e.target.closest("button:not(.expand-head), a, input")) return;
-    const open = !block.classList.contains("is-open");
-    if (open) expandedHistoryIds.add(view.id);
-    else expandedHistoryIds.delete(view.id);
-    setHistoryExpand(block, open);
-  });
-
-  body.querySelector('[data-act="view"]')?.addEventListener("click", async (ev) => {
+async function openHistoryDetail(taskId, ev) {
+  if (ev) {
     ev.stopPropagation();
     miniBurst(ev.clientX, ev.clientY);
-    const task = await fetchTask(view.id);
+  }
+  try {
+    const task = await fetchTask(taskId);
     viewingTaskId = task.id;
     currentTaskId = task.id;
-    renderTask(task, true);
-    resultSection.scrollIntoView({ behavior: "smooth" });
+    openTaskModal(task, true);
     if (task.status === "pending" || task.status === "processing") {
       startPolling(task.id);
     }
+  } catch (err) {
+    showStatus(err.message || "加载失败");
+  }
+}
+
+function createHistoryBlock(view) {
+  const plat = platformClass(view.platform);
+  const block = document.createElement("article");
+  block.className = `m-card hist-card ${histStatusClass(view.status)} ${plat}`;
+  block.dataset.taskId = view.id;
+
+  const titleText = historyTitleLabel(view);
+  const shortTitle =
+    titleText.length > 72 ? `${escapeHtml(titleText.slice(0, 72))}…` : escapeHtml(titleText);
+  const author = historyAuthorLabel(view);
+  const authorHtml = author
+    ? author.length > 28
+      ? `${escapeHtml(author.slice(0, 28))}…`
+      : escapeHtml(author)
+    : `<span class="hist-card-author-muted">未知播主</span>`;
+
+  const transcriptText = historyTranscriptText(view);
+  const actionBtns = [];
+  if (hasHistoryTranscript(view)) {
+    actionBtns.push(histActionBtn("primary", "复制口播文稿", ICON_COPY));
+  }
+  if (canDownloadVideo(view.status)) {
+    actionBtns.push(histActionBtn("ghost", "下载视频", ICON_DOWNLOAD));
+  }
+  const actionsHtml = actionBtns.length
+    ? `<div class="hist-card-actions">${actionBtns.join("")}</div>`
+    : "";
+
+  const durationLabel = taskDurationLabel(view);
+  const durationHtml = durationLabel
+    ? `<span class="hist-card-duration">${escapeHtml(durationLabel)}</span>`
+    : "";
+
+  block.innerHTML = `
+    <div class="m-card-shell hist-card-shell">
+      <div class="hist-card-top">
+        ${renderPlatformAvatarCol(view.platform, historyAvatarInner(view))}
+        <div class="hist-card-main">
+          <strong class="m-card-name hist-card-title">${shortTitle}</strong>
+          <div class="hist-card-meta">
+            <span class="hist-card-author">${authorHtml}</span>
+            ${durationHtml}
+            <span class="hist-card-task-id">#${escapeHtml(String(view.id))}</span>
+          </div>
+        </div>
+        ${actionsHtml}
+      </div>
+    </div>`;
+
+  block.addEventListener("click", (e) => openHistoryDetail(view.id, e));
+
+  block.querySelector(".hist-act-primary")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    copyToClipboard(transcriptText, e.currentTarget);
   });
 
-  body.querySelector('[data-act="retry"]')?.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    miniBurst(ev.clientX, ev.clientY);
-    handleRetry(view.id);
+  block.querySelector(".hist-act-ghost")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    triggerVideoDownload(view.id, e.currentTarget);
   });
 
-  block.append(head, body);
+  const avImg = block.querySelector(".m-avatar-img");
+  if (avImg) {
+    avImg.addEventListener("error", () => {
+      avImg.remove();
+    });
+  }
+
   return block;
 }
 
@@ -1133,22 +1586,26 @@ async function loadHistory() {
     const res = await fetch(`${SUBTITLES_API}?limit=20`);
     const { data, status } = await parseJsonResponse(res);
     if (status !== 200) {
-      historyList.innerHTML = '<div class="empty-history">加载失败</div>';
+      historyList.innerHTML = '<div class="m-empty"><p>加载失败</p></div>';
       return;
     }
     historyList.innerHTML = "";
 
     if (!data.items?.length) {
-      historyList.innerHTML = '<div class="empty-history">暂无记录</div>';
+      historyList.innerHTML = `
+        <div class="m-empty m-empty-lg">
+          <div class="m-empty-icon" aria-hidden="true">◌</div>
+          <p>暂无记录</p>
+          <span>提交视频链接后，提取结果会出现在这里</span>
+        </div>`;
       return;
     }
 
     for (const item of data.items) {
-      const view = subtitleToView(item);
-      historyList.appendChild(createHistoryBlock(view));
+      historyList.appendChild(createHistoryBlock(subtitleToView(item)));
     }
   } catch {
-    historyList.innerHTML = '<div class="empty-history">加载失败</div>';
+    historyList.innerHTML = '<div class="m-empty"><p>加载失败</p></div>';
   }
 }
 
@@ -1167,7 +1624,7 @@ async function handleRetry(taskId) {
 
 refreshHistoryBtn.addEventListener("click", (e) => {
   miniBurst(e.clientX, e.clientY);
-  historyList.querySelectorAll(".hist-expand").forEach((el, i) => {
+  historyList.querySelectorAll(".hist-card").forEach((el, i) => {
     el.style.transition = "opacity .25s ease";
     el.style.opacity = "0.35";
     setTimeout(() => {
@@ -1181,4 +1638,5 @@ submitBtn.addEventListener("click", (e) => {
   if (!submitBtn.disabled) miniBurst(e.clientX, e.clientY);
 });
 
+initTaskModal();
 loadHistory();

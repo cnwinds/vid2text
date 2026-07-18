@@ -11,18 +11,20 @@ from douyin_to_text.pipeline import PipelineOptions, run_pipeline
 from douyin_to_text.stt_engine import default_engine, default_model
 from web import db
 from web.progress_reporter import TaskProgressReporter
+from web.work_cache import get_work_dir, maybe_enforce_work_cache_quota
 
 logger = logging.getLogger(__name__)
 
 _worker_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 
-# 可通过环境变量覆盖
-WORK_DIR = Path(__file__).resolve().parent.parent / "data" / "work"
+# 可通过环境变量覆盖（见 WORK_DIR / WORK_CACHE_QUOTA_GB）
+WORK_DIR = get_work_dir()
 COOKIES_PATH: Path | None = None
 STT_ENGINE = default_engine()
 WHISPER_MODEL = default_model()
 POLL_INTERVAL_SEC = 2.0
+CACHE_SWEEP_INTERVAL_SEC = 300.0
 
 
 def _cookies_path_for_task(task: dict) -> Path | None:
@@ -69,6 +71,9 @@ def _process_task(task: dict) -> None:
         resume_step=task.get("progress_step") or "",
         saved_title=task.get("title") or "",
         saved_description=task.get("description") or "",
+        saved_author_name=task.get("author_name") or "",
+        saved_avatar_url=task.get("avatar_url") or "",
+        saved_download_url=task.get("download_url") or "",
         saved_raw_transcript=task.get("raw_transcript") or "",
     )
     reporter = TaskProgressReporter(task_id)
@@ -94,17 +99,24 @@ def _process_task(task: dict) -> None:
                 dispatch_task_webhook(updated)
             return
         result = run_pipeline(url, opts, on_progress=reporter)
-        updated = db.update_task(
-            task_id,
-            status="done",
-            progress_step="correct",
-            progress_metrics='{"step":"correct","kind":"idle","activity":1,"detail":"完成"}',
-            title=result.title,
-            description=result.description,
-            raw_transcript=result.raw_transcript,
-            corrected_transcript=result.corrected_transcript,
-            video_url=result.video_url,
-        )
+        fresh = db.get_task(task_id) or task
+        dur = float(fresh.get("duration_sec") or 0)
+        done_fields: dict = {
+            "status": "done",
+            "progress_step": "correct",
+            "progress_metrics": '{"step":"correct","kind":"idle","activity":1,"detail":"完成"}',
+            "title": result.title,
+            "description": result.description,
+            "author_name": result.author_name,
+            "avatar_url": result.avatar_url,
+            "download_url": result.download_url,
+            "raw_transcript": result.raw_transcript,
+            "corrected_transcript": result.corrected_transcript,
+            "video_url": result.video_url,
+        }
+        if dur > 0:
+            done_fields["duration_sec"] = dur
+        updated = db.update_task(task_id, **done_fields)
         logger.info("任务 #%s 完成", task_id)
         if updated:
             from web.webhook import dispatch_task_webhook
@@ -123,10 +135,26 @@ def _process_task(task: dict) -> None:
                 cookie_path.unlink(missing_ok=True)
             except Exception:
                 pass
+        try:
+            vid = str(task.get("video_id") or "").strip()
+            maybe_enforce_work_cache_quota(
+                work_dir=WORK_DIR,
+                protect_video_ids={vid} if vid else None,
+            )
+        except Exception:
+            logger.exception("work 缓存配额清理失败")
 
 
 def _worker_loop() -> None:
+    last_sweep = 0.0
     while not _stop_event.is_set():
+        now = time.monotonic()
+        if now - last_sweep >= CACHE_SWEEP_INTERVAL_SEC:
+            last_sweep = now
+            try:
+                maybe_enforce_work_cache_quota(work_dir=WORK_DIR)
+            except Exception:
+                logger.exception("work 缓存配额清理失败")
         task = db.claim_pending_task()
         if task:
             _process_task(task)
@@ -145,6 +173,11 @@ def start_worker() -> None:
             ", ".join(f"#{i}" for i in recovered),
         )
     _stop_event.clear()
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        maybe_enforce_work_cache_quota(work_dir=WORK_DIR)
+    except Exception:
+        logger.exception("启动时 work 缓存配额清理失败")
     _worker_thread = threading.Thread(target=_worker_loop, name="vid2text-worker", daemon=True)
     _worker_thread.start()
     logger.info("后台 worker 已启动")

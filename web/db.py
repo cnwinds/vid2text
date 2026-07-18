@@ -64,6 +64,22 @@ def init_db() -> None:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_monitor_id ON tasks(monitor_id)"
             )
+        if "author_name" not in cols:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN author_name TEXT NOT NULL DEFAULT ''"
+            )
+        if "avatar_url" not in cols:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''"
+            )
+        if "download_url" not in cols:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN download_url TEXT NOT NULL DEFAULT ''"
+            )
+        if "duration_sec" not in cols:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN duration_sec REAL NOT NULL DEFAULT 0"
+            )
 
         mv_cols = {
             r[1] for r in conn.execute("PRAGMA table_info(monitor_videos)").fetchall()
@@ -163,21 +179,45 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
 
 
+_TASK_WITH_MONITOR = """
+    SELECT t.*, m.author_name AS monitor_author_name, m.avatar_url AS monitor_avatar_url
+    FROM tasks t
+    LEFT JOIN monitors m ON t.monitor_id = m.id
+"""
+
+
+def enrich_task_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    if not (row.get("author_name") or "").strip():
+        row["author_name"] = (row.pop("monitor_author_name", None) or "").strip()
+    else:
+        row.pop("monitor_author_name", None)
+    if not (row.get("avatar_url") or "").strip():
+        row["avatar_url"] = (row.pop("monitor_avatar_url", None) or "").strip()
+    else:
+        row.pop("monitor_avatar_url", None)
+    return row
+
+
 def find_by_platform_video(platform: str, video_id: str) -> dict[str, Any] | None:
     with get_conn() as conn:
         cur = conn.execute(
-            "SELECT * FROM tasks WHERE platform = ? AND video_id = ?",
+            f"{_TASK_WITH_MONITOR} WHERE t.platform = ? AND t.video_id = ?",
             (platform, video_id),
         )
         row = cur.fetchone()
-        return row_to_dict(row) if row else None
+        return enrich_task_row(row_to_dict(row)) if row else None
 
 
 def get_task(task_id: int) -> dict[str, Any] | None:
     with get_conn() as conn:
-        cur = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        cur = conn.execute(
+            f"{_TASK_WITH_MONITOR} WHERE t.id = ?",
+            (task_id,),
+        )
         row = cur.fetchone()
-        return row_to_dict(row) if row else None
+        return enrich_task_row(row_to_dict(row)) if row else None
 
 
 def create_task(
@@ -243,6 +283,18 @@ def find_active_task_by_ip(client_ip: str, *, exclude_id: int | None = None) -> 
         return row_to_dict(row) if row else None
 
 
+def active_task_video_ids() -> set[str]:
+    """当前排队/处理中任务的平台 video_id，缓存清理时不删除。"""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT video_id FROM tasks
+            WHERE status IN ('pending', 'processing') AND video_id != ''
+            """
+        )
+        return {str(r["video_id"]) for r in cur.fetchall()}
+
+
 def update_task(task_id: int, **fields: Any) -> dict[str, Any] | None:
     if not fields:
         return get_task(task_id)
@@ -265,15 +317,14 @@ def count_tasks() -> int:
 def list_history(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
     with get_conn() as conn:
         cur = conn.execute(
-            """
-            SELECT *
-            FROM tasks
-            ORDER BY id DESC
+            f"""
+            {_TASK_WITH_MONITOR}
+            ORDER BY t.id DESC
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
         )
-        return [row_to_dict(r) for r in cur.fetchall()]
+        return [enrich_task_row(row_to_dict(r)) for r in cur.fetchall()]
 
 
 def requeue_interrupted_tasks() -> list[int]:
@@ -592,12 +643,9 @@ def upsert_monitor_video(
                 fields["title"] = title
             if published_at:
                 fields["published_at"] = published_at
-            if like_count:
-                fields["like_count"] = like_count
-            if comment_count:
-                fields["comment_count"] = comment_count
-            if play_count:
-                fields["play_count"] = play_count
+            fields["like_count"] = int(like_count or 0)
+            fields["comment_count"] = int(comment_count or 0)
+            fields["play_count"] = int(play_count or 0)
             if task_id is not None:
                 fields["task_id"] = task_id
             if fields:

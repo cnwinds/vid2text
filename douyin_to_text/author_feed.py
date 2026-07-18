@@ -28,6 +28,18 @@ def _stats_from_bili_item(item: dict[str, Any]) -> tuple[int, int, int]:
     return like, comment, play
 
 
+def _pick_douyin_avatar(user: dict[str, Any]) -> str:
+    if not user:
+        return ""
+    for key in ("avatar_larger", "avatar_medium", "avatar_thumb", "avatar_168x168"):
+        thumb = user.get(key) or {}
+        if isinstance(thumb, dict):
+            urls = thumb.get("url_list") or []
+            if urls and urls[0]:
+                return str(urls[0])
+    return ""
+
+
 def _stats_from_aweme(aweme: dict[str, Any]) -> tuple[int, int, int]:
     stat = aweme.get("statistics") or {}
     like = int(stat.get("digg_count") or stat.get("admire_count") or 0)
@@ -622,14 +634,19 @@ def _collect_douyin_videos(
             all_awemes.extend(alist)
             next_cursor = str(body.get("max_cursor") or "")
             has_more = bool(body.get("has_more")) and bool(next_cursor)
+            page_user = body.get("user") or {}
+            av_page = _pick_douyin_avatar(page_user)
+            if av_page:
+                author.avatar_url = av_page
             for aweme in alist:
                 a = aweme.get("author") or {}
                 if a.get("nickname"):
                     nickname = a.get("nickname")
-                    break
+                av = _pick_douyin_avatar(a)
+                if av:
+                    author.avatar_url = av
             if len(all_awemes) >= target or not has_more:
                 break
-            # 同会话续页
             more = _douyin_fetch_post_page(page, author.author_key, next_cursor, 20)
             if not more:
                 has_more = False

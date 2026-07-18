@@ -103,6 +103,22 @@ def create_monitor_from_url(
     )
 
 
+def _sync_video_metadata(monitor: dict[str, Any], video, *, task_id: int | None) -> None:
+    """写入/更新作品元数据（含互动统计），不改变入队逻辑。"""
+    db.upsert_monitor_video(
+        monitor_id=monitor["id"],
+        platform=monitor["platform"],
+        video_id=video.video_id,
+        video_url=video.url,
+        title=video.title,
+        published_at=video.published_at,
+        like_count=getattr(video, "like_count", 0) or 0,
+        comment_count=getattr(video, "comment_count", 0) or 0,
+        play_count=getattr(video, "play_count", 0) or 0,
+        task_id=task_id,
+    )
+
+
 def _enqueue_video(monitor: dict[str, Any], video) -> int | None:
     """写入 monitor_videos 并创建/关联 task。返回 task_id。"""
     platform = monitor["platform"]
@@ -118,28 +134,35 @@ def _enqueue_video(monitor: dict[str, Any], video) -> int | None:
             monitor_id=monitor["id"],
         )
         task_id = task["id"]
+        fields: dict[str, str] = {}
         if video.title:
-            db.update_task(task_id, title=video.title)
+            fields["title"] = video.title
+        author = (monitor.get("author_name") or "").strip()
+        if author:
+            fields["author_name"] = author
+        avatar = (monitor.get("avatar_url") or "").strip()
+        if avatar:
+            fields["avatar_url"] = avatar
+        if fields:
+            db.update_task(task_id, **fields)
     else:
         # 关联 monitor_id（若尚未设置）
+        patch: dict[str, Any] = {}
         if not existing_task.get("monitor_id"):
-            db.update_task(existing_task["id"], monitor_id=monitor["id"])
+            patch["monitor_id"] = monitor["id"]
+        author = (monitor.get("author_name") or "").strip()
+        if author and not (existing_task.get("author_name") or "").strip():
+            patch["author_name"] = author
+        avatar = (monitor.get("avatar_url") or "").strip()
+        if avatar and not (existing_task.get("avatar_url") or "").strip():
+            patch["avatar_url"] = avatar
+        if patch:
+            db.update_task(existing_task["id"], **patch)
         # 失败任务由监控重新入队
         if existing_task["status"] == "failed":
             db.retry_task(existing_task["id"])
 
-    db.upsert_monitor_video(
-        monitor_id=monitor["id"],
-        platform=platform,
-        video_id=video.video_id,
-        video_url=video.url,
-        title=video.title,
-        published_at=video.published_at,
-        like_count=getattr(video, "like_count", 0) or 0,
-        comment_count=getattr(video, "comment_count", 0) or 0,
-        play_count=getattr(video, "play_count", 0) or 0,
-        task_id=task_id,
-    )
+    _sync_video_metadata(monitor, video, task_id=task_id)
     return task_id
 
 
@@ -199,10 +222,15 @@ def scan_monitor(monitor_id: int) -> dict[str, Any]:
         raise
 
     enqueued = 0
+    is_backfill = backfill_status in ("pending", "running", "failed")
     for video in videos:
-        # 常态扫描：已见过的跳过；补采阶段也会靠 UNIQUE 去重
         seen = db.get_monitor_video(monitor["platform"], video.video_id)
-        if seen and backfill_status not in ("pending", "running"):
+        existing_task_id = seen.get("task_id") if seen else None
+
+        # 每次扫描都刷新列表里作品的标题、发布时间、点赞/评论/播放
+        _sync_video_metadata(monitor, video, task_id=existing_task_id)
+
+        if seen and not is_backfill:
             continue
         if seen and seen.get("task_id"):
             continue

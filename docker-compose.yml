@@ -16,6 +16,7 @@ services:
     environment:
       - SENSEVOICE_OFFLINE=1
       - SENSEVOICE_MODEL_DIR=/app/models/SenseVoiceSmall-onnx
+      - WORK_CACHE_QUOTA_GB=1
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1gb"

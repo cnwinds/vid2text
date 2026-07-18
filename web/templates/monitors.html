@@ -9,68 +9,86 @@
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body>
+<body class="monitors-page">
   <canvas id="bgCanvas" aria-hidden="true"></canvas>
   <div class="wrap">
     <header class="subpage-header">
       <p class="back-link"><a href="/">← 返回主页</a></p>
       <div class="eyebrow"><span class="dot"></span>ACCOUNT MONITOR</div>
       <h1 class="subpage-title">账号监控</h1>
-      <p class="sub">盯主播新作，自动提取文案 · 抖音 / B站 / YouTube</p>
+      <p class="sub">盯紧博主更新 · 自动扫描 · 一键提取文案</p>
       <nav class="header-nav">
         <a href="/">提取</a>
-        <a href="/monitors">监控</a>
+        <a href="/monitors" class="is-active">监控</a>
         <a href="/settings">设置</a>
         <a href="/api-docs">API</a>
       </nav>
     </header>
 
-    <section class="panel expand-block is-open" id="add-monitor-block">
-      <button type="button" class="expand-head" id="toggle-add-form" aria-expanded="true">
-        <span class="expand-chevron" aria-hidden="true">▾</span>
-        <span class="expand-title">添加监控</span>
-      </button>
-      <div class="expand-body">
-        <form id="monitor-form">
-          <label class="field-label" for="monitor-url">作品链接或主页 / 频道链接</label>
-          <div class="input-row">
+    <div id="monitor-toast" class="m-toast" role="status" hidden></div>
+
+    <section class="panel m-add-panel">
+      <div class="m-add-head">
+        <div>
+          <h2 class="m-section-title">添加监控</h2>
+          <p class="m-section-desc">粘贴作品链接或博主主页，支持抖音 · B站 · YouTube</p>
+        </div>
+        <button type="button" class="m-btn m-btn-ghost m-add-collapse" id="toggle-add-form" aria-expanded="true">
+          <span class="m-chevron"></span>
+        </button>
+      </div>
+      <div class="m-add-body is-open" id="add-monitor-body">
+        <form id="monitor-form" class="m-add-form">
+          <label class="field-label" for="monitor-url">链接</label>
+          <div class="input-row m-input-row">
             <input
               id="monitor-url"
               type="url"
               name="url"
-              placeholder="https://www.douyin.com/user/… 或任意作品链接"
+              placeholder="https://www.douyin.com/user/…"
               autocomplete="off"
               required
             />
-            <button type="submit" class="submit-btn" id="monitor-submit">添加</button>
+            <button type="submit" class="submit-btn" id="monitor-submit">添加监控</button>
           </div>
-          <div class="monitor-options">
-            <label class="radio-line">
-              <input type="radio" name="backfill_mode" value="recent" checked />
-              补采最近
+          <div class="m-segment-group">
+            <span class="m-segment-label">补采策略</span>
+            <div class="m-segment" role="radiogroup" aria-label="补采策略">
+              <label class="m-segment-item">
+                <input type="radio" name="backfill_mode" value="recent" checked />
+                <span>最近 N 条</span>
+              </label>
+              <label class="m-segment-item">
+                <input type="radio" name="backfill_mode" value="all" />
+                <span>可见全量</span>
+              </label>
+            </div>
+            <label class="m-n-stepper">
+              <span>N</span>
               <input type="number" id="backfill-n" min="1" max="200" value="10" class="n-input" />
-              条
-            </label>
-            <label class="radio-line">
-              <input type="radio" name="backfill_mode" value="all" />
-              可见范围内全量补采（分批进行）
             </label>
           </div>
         </form>
-        <p id="monitor-status" class="status-msg" hidden></p>
       </div>
     </section>
 
-    <section class="panel">
-      <div class="history-header">
-        <h2>监控列表</h2>
-        <button type="button" class="refresh-btn" id="refresh-monitors">刷新</button>
+    <section class="panel m-list-panel">
+      <div class="m-list-toolbar">
+        <div>
+          <h2 class="m-section-title">监控列表</h2>
+          <p class="m-section-desc">点击卡片展开作品与规则 · 按发布时间倒序</p>
+        </div>
+        <button type="button" class="m-btn m-btn-ghost" id="refresh-monitors">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.36M21 3v6h-6"/></svg>
+          刷新
+        </button>
       </div>
-      <div id="monitor-list" class="expand-list"></div>
+      <div id="monitor-list" class="m-list"></div>
     </section>
 
     <footer>VID2TEXT — ACCOUNT MONITOR</footer>
   </div>
+  <script src="/static/ui-shared.js?v={{ static_v() }}"></script>
   <script src="/static/monitors.js?v={{ static_v() }}"></script>
 </body>
 </html>

@@ -109,6 +109,7 @@ def _resolve_bilibili(url: str) -> AuthorProfile:
     if m:
         mid = m.group(1)
         name = ""
+        face = ""
         try:
             import httpx
 
@@ -120,7 +121,9 @@ def _resolve_bilibili(url: str) -> AuthorProfile:
             )
             data = resp.json()
             if data.get("code") == 0:
-                name = (data.get("data") or {}).get("name") or ""
+                payload = data.get("data") or {}
+                name = payload.get("name") or ""
+                face = str(payload.get("face") or "")
         except Exception:
             pass
         return AuthorProfile(
@@ -128,6 +131,7 @@ def _resolve_bilibili(url: str) -> AuthorProfile:
             author_key=mid,
             author_name=name,
             profile_url=f"https://space.bilibili.com/{mid}",
+            avatar_url=face,
             source_url=url,
         )
 
@@ -158,12 +162,14 @@ def _resolve_bilibili(url: str) -> AuthorProfile:
             owner = (data.get("data") or {}).get("owner") or {}
             mid = str(owner.get("mid") or "")
             name = owner.get("name") or info.get("uploader") or ""
+            face = str(owner.get("face") or "")
             if mid:
                 return AuthorProfile(
                     platform=Platform.BILIBILI.value,
                     author_key=mid,
                     author_name=str(name),
                     profile_url=f"https://space.bilibili.com/{mid}",
+                    avatar_url=face,
                     source_url=url,
                 )
         raise RuntimeError("未能从 B 站视频解析 UP 主 mid")

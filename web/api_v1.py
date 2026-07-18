@@ -7,7 +7,7 @@ import time
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 
 from web import db
 from web.api_docs import (
@@ -20,6 +20,7 @@ from web.api_docs import (
     build_schema_dict,
 )
 from web.schemas import (
+    DownloadUrlResponse,
     PaginationMeta,
     ProcessingInfo,
     RateLimitResponse,
@@ -31,8 +32,11 @@ from web.schemas import (
 )
 from web.services import (
     check_ip_rate_limit,
+    enrich_task_duration,
     find_by_url,
     rate_limit_payload,
+    resolve_download_url,
+    prepare_video_file,
     row_to_subtitle,
     submit_url,
     subtitle_http_status,
@@ -164,6 +168,7 @@ async def get_subtitles(req_id: int, request: Request) -> Response:
     row = db.get_task(req_id)
     if not row:
         raise HTTPException(status_code=404, detail="请求不存在")
+    enrich_task_duration(row, persist=True)
     return _subtitle_response(row, request)
 
 
@@ -196,6 +201,7 @@ async def list_or_lookup_subtitles(
                 status_code=404,
                 detail="该视频尚无提取记录，请先 POST /api/v1/subtitles",
             )
+        enrich_task_duration(row, persist=True)
         cached = row["status"] == "done"
         return _subtitle_response(row, request, cached=cached)
 
@@ -254,6 +260,68 @@ async def get_subtitle_text(
     if not content:
         raise HTTPException(status_code=404, detail="无字幕内容")
     return PlainTextResponse(content)
+
+
+@router.post(
+    "/subtitles/{req_id}/download-url",
+    summary="获取视频下载直链",
+    description=(
+        "解析并返回视频 CDN 直链（非页面 URL）。\n\n"
+        "**响应说明：**\n"
+        "- `200` — 返回 `download_url`\n"
+        "- `404` — id 不存在\n"
+        "- `422` — 解析失败"
+    ),
+    response_model=DownloadUrlResponse,
+)
+async def fetch_download_url(req_id: int) -> DownloadUrlResponse:
+    row = db.get_task(req_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="请求不存在")
+    url, err = await asyncio.to_thread(resolve_download_url, req_id)
+    if not url:
+        raise HTTPException(status_code=422, detail=err or "未能解析视频直链")
+    return DownloadUrlResponse(download_url=url)
+
+
+@router.get(
+    "/subtitles/{req_id}/download",
+    summary="下载视频文件",
+    description=(
+        "通过服务端下载视频（自动携带 Referer / Cookie），返回 MP4 文件。\n\n"
+        "Query `check=1` 时仅校验任务是否可下载，不传输文件。\n\n"
+        "**响应说明：**\n"
+        "- `200` — MP4 文件流\n"
+        "- `400` — 任务未完成\n"
+        "- `404` — id 不存在\n"
+        "- `422` — 下载失败"
+    ),
+    response_model=None,
+)
+async def download_subtitle_video(
+    req_id: int,
+    check: bool = Query(False, description="为 true 时仅校验，不下载文件"),
+) -> Response:
+    row = db.get_task(req_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="请求不存在")
+    if row["status"] not in ("done", "failed"):
+        raise HTTPException(status_code=400, detail="任务尚未完成，暂不可下载视频")
+    if check:
+        return JSONResponse(content={"ok": True})
+
+    try:
+        path, filename = await asyncio.to_thread(prepare_video_file, req_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="请求不存在") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # 文件名只用 ASCII，避免 Content-Disposition 编码问题
+    ascii_name = f"{row['video_id']}.mp4"
+    return FileResponse(path, media_type="video/mp4", filename=ascii_name)
 
 
 @router.post(

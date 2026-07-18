@@ -57,6 +57,9 @@ class PipelineResult:
     video_url: str
     title: str
     description: str
+    author_name: str
+    avatar_url: str
+    download_url: str
     raw_transcript: str
     corrected_transcript: str
     transcript_source: str  # platform_subtitle | stt | none
@@ -76,11 +79,63 @@ class PipelineOptions:
     resume_step: str = ""
     saved_title: str = ""
     saved_description: str = ""
+    saved_author_name: str = ""
+    saved_avatar_url: str = ""
+    saved_download_url: str = ""
     saved_raw_transcript: str = ""
 
 
 def _noop_progress(_step: str, _metrics: dict[str, Any] | None = None) -> None:
     pass
+
+
+def _author_from_douyin_detail(detail: dict[str, Any]) -> str:
+    author = (detail or {}).get("author") or {}
+    return str(author.get("nickname") or author.get("unique_id") or "").strip()
+
+
+def _author_from_ytdlp_info(info: dict[str, Any]) -> str:
+    return str(
+        info.get("uploader") or info.get("channel") or info.get("artist") or ""
+    ).strip()
+
+
+def _avatar_from_douyin_detail(detail: dict[str, Any]) -> str:
+    author = (detail or {}).get("author") or {}
+    for key in ("avatar_thumb", "avatar_medium", "avatar_larger"):
+        thumb = author.get(key) or {}
+        urls = thumb.get("url_list") if isinstance(thumb, dict) else None
+        if urls:
+            return str(urls[0])
+    return ""
+
+
+def _avatar_from_ytdlp_info(info: dict[str, Any]) -> str:
+    for key in ("uploader_avatar", "channel_avatar", "avatar"):
+        val = info.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    thumbs = info.get("thumbnails") or []
+    if isinstance(thumbs, list):
+        for item in reversed(thumbs):
+            if isinstance(item, dict) and item.get("url"):
+                return str(item["url"])
+    return ""
+
+
+def _download_url_from_ytdlp_info(info: dict[str, Any]) -> str:
+    direct = info.get("url")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    formats = info.get("formats") or []
+    if isinstance(formats, list):
+        for fmt in reversed(formats):
+            if not isinstance(fmt, dict):
+                continue
+            url = fmt.get("url")
+            if url and fmt.get("vcodec") not in (None, "none"):
+                return str(url)
+    return ""
 
 
 def _skip_stt_steps(prog: ProgressCallback, tel: PipelineTelemetry) -> None:
@@ -136,6 +191,9 @@ def _run_douyin(
     audio_path = work_dir / f"{parsed.video_id}.wav"
 
     meta = None
+    author_name = (opts.saved_author_name or "").strip()
+    avatar_url = (opts.saved_avatar_url or "").strip()
+    download_url = (opts.saved_download_url or "").strip()
     if opts.saved_title:
         title = opts.saved_title.strip()
         description = (opts.saved_description or "").strip()
@@ -151,6 +209,9 @@ def _run_douyin(
         )
         description = meta.desc.strip()
         title = (meta.caption or meta.desc or "").strip()
+        author_name = _author_from_douyin_detail(meta.raw_detail) or author_name
+        avatar_url = _avatar_from_douyin_detail(meta.raw_detail) or avatar_url
+        download_url = (meta.video_url or "").strip() or download_url
         tel.title = title
         tel.duration_sec = meta.duration_ms / 1000.0 if meta.duration_ms else 0.0
         emit_progress(
@@ -160,6 +221,9 @@ def _run_douyin(
                 **network_wait_metrics(detail="视频信息已就绪"),
                 "title": title,
                 "description": description,
+                "author_name": author_name,
+                "avatar_url": avatar_url,
+                "download_url": download_url,
             },
             tel,
         )
@@ -185,6 +249,9 @@ def _run_douyin(
                 "raw_transcript": raw,
                 "title": title,
                 "description": description,
+                "author_name": author_name,
+                "avatar_url": avatar_url,
+                "download_url": download_url,
             },
             tel,
         )
@@ -194,6 +261,9 @@ def _run_douyin(
             meta = fetch_metadata(parsed.video_id, headless=opts.headless)
             description = meta.desc.strip()
             title = (meta.caption or meta.desc or "").strip() or title
+            author_name = _author_from_douyin_detail(meta.raw_detail) or author_name
+            avatar_url = _avatar_from_douyin_detail(meta.raw_detail) or avatar_url
+            download_url = (meta.video_url or "").strip() or download_url
             tel.title = title
             tel.duration_sec = meta.duration_ms / 1000.0 if meta.duration_ms else tel.duration_sec
         emit_progress(prog, "fetch_subtitle", network_wait_metrics(detail="无平台字幕"), tel)
@@ -274,7 +344,7 @@ def _run_douyin(
         emit_progress(
             prog,
             "stt",
-            {**cpu_metrics(0, detail="识别完成"), "raw_transcript": raw, "title": title, "description": description},
+            {**cpu_metrics(0, detail="识别完成"), "raw_transcript": raw, "title": title, "description": description, "author_name": author_name, "avatar_url": avatar_url, "download_url": download_url},
             tel,
         )
     else:
@@ -298,6 +368,9 @@ def _run_douyin(
         video_url=parsed.canonical_url,
         title=title,
         description=description,
+        author_name=author_name,
+        avatar_url=avatar_url,
+        download_url=download_url,
         raw_transcript=raw,
         corrected_transcript=corrected,
         transcript_source=source,
@@ -317,6 +390,9 @@ def _run_ytdlp(
     artifacts = find_ytdlp_artifacts(work_dir, parsed.video_id)
 
     meta = None
+    author_name = (opts.saved_author_name or "").strip()
+    avatar_url = (opts.saved_avatar_url or "").strip()
+    download_url = (opts.saved_download_url or "").strip()
     if opts.saved_title:
         title = opts.saved_title.strip()
         description = (opts.saved_description or "").strip()
@@ -332,6 +408,9 @@ def _run_ytdlp(
         )
         title = (meta.title or "").strip()
         description = (meta.description or "").strip()
+        author_name = _author_from_ytdlp_info(meta.raw_info) or author_name
+        avatar_url = _avatar_from_ytdlp_info(meta.raw_info) or avatar_url
+        download_url = _download_url_from_ytdlp_info(meta.raw_info) or download_url
         tel.title = title
         tel.duration_sec = float(meta.duration_sec or 0)
         emit_progress(
@@ -341,6 +420,9 @@ def _run_ytdlp(
                 **network_wait_metrics(detail="视频信息已就绪"),
                 "title": title,
                 "description": description,
+                "author_name": author_name,
+                "avatar_url": avatar_url,
+                "download_url": download_url,
             },
             tel,
         )
@@ -355,6 +437,9 @@ def _run_ytdlp(
     else:
         if meta is None:
             meta = extract_info(url, cookies=cookies)
+            author_name = _author_from_ytdlp_info(meta.raw_info) or author_name
+            avatar_url = _avatar_from_ytdlp_info(meta.raw_info) or avatar_url
+            download_url = _download_url_from_ytdlp_info(meta.raw_info) or download_url
         emit_progress(prog, "fetch_subtitle", network_wait_metrics(detail="获取平台字幕…"), tel)
         sub = run_monitored(
             lambda m: emit_progress(prog, "fetch_subtitle", m, tel),
@@ -458,6 +543,9 @@ def _run_ytdlp(
                     "raw_transcript": raw,
                     "title": title,
                     "description": description,
+                    "author_name": author_name,
+                    "avatar_url": avatar_url,
+                    "download_url": download_url,
                 },
                 tel,
             )
@@ -482,6 +570,9 @@ def _run_ytdlp(
         video_url=parsed.canonical_url,
         title=title,
         description=description,
+        author_name=author_name,
+        avatar_url=avatar_url,
+        download_url=download_url,
         raw_transcript=raw,
         corrected_transcript=corrected,
         transcript_source=source,

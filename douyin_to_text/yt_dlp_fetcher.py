@@ -318,5 +318,52 @@ def download_audio(
     return out_wav
 
 
+def download_video(
+    url: str,
+    work_dir: Path,
+    video_id: str,
+    cookies: str | None = None,
+) -> Path:
+    """Download merged best-quality video to work_dir/{video_id}.mp4."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    target = work_dir / f"{video_id}.mp4"
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+
+    outtmpl = str(work_dir / f"{video_id}.%(ext)s")
+    opts = _ytdlp_base_opts(
+        url,
+        cookies=cookies,
+        extra={
+            "format": "bestvideo+bestaudio/best",
+            "merge_output_format": "mp4",
+            "outtmpl": outtmpl,
+        },
+    )
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+    except Exception as exc:
+        msg = str(exc)
+        if "412" in msg and ("bilibili.com" in url or "b23.tv" in url):
+            raise RuntimeError(
+                "B 站返回 412（需登录态）。请到设置页配置「B站 Cookie」后重试。"
+            ) from exc
+        raise
+
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+
+    for path in sorted(work_dir.glob(f"{video_id}.*")):
+        if not path.is_file() or path.stat().st_size == 0:
+            continue
+        if path.suffix.lower() in {".mp4", ".webm", ".mkv", ".flv"}:
+            if path != target:
+                path.replace(target)
+            return target
+
+    raise RuntimeError("视频下载失败：未找到输出文件")
+
+
 def default_work_dir() -> Path:
     return Path(tempfile.mkdtemp(prefix="video-to-text-"))

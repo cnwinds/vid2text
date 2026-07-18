@@ -33,6 +33,14 @@ class VideoRef(BaseModel):
     video_id: str
     title: str = ""
     description: str = ""
+    author_name: str = ""
+    avatar_url: str = ""
+    download_url: str = Field("", description="视频直链（CDN），可用于下载")
+    duration_sec: float = Field(0, description="视频时长（秒）")
+
+
+class DownloadUrlResponse(BaseModel):
+    download_url: str = Field(..., description="视频 CDN 直链，可用于下载")
 
 
 class SubtitleContent(BaseModel):
