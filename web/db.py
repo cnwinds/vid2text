@@ -190,9 +190,11 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 _TASK_WITH_MONITOR = """
-    SELECT t.*, m.author_name AS monitor_author_name, m.avatar_url AS monitor_avatar_url
+    SELECT t.*, m.author_name AS monitor_author_name, m.avatar_url AS monitor_avatar_url,
+           mv.published_at AS video_published_at
     FROM tasks t
     LEFT JOIN monitors m ON t.monitor_id = m.id
+    LEFT JOIN monitor_videos mv ON mv.task_id = t.id
 """
 
 
@@ -207,6 +209,11 @@ def enrich_task_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
         row["avatar_url"] = (row.pop("monitor_avatar_url", None) or "").strip()
     else:
         row.pop("monitor_avatar_url", None)
+    pub = (row.pop("video_published_at", None) or "").strip()
+    if pub:
+        row["published_at"] = pub
+    elif "published_at" not in row:
+        row["published_at"] = ""
     return row
 
 
@@ -739,7 +746,14 @@ def list_monitor_videos(
     with get_conn() as conn:
         cur = conn.execute(
             """
-            SELECT mv.*, t.status AS task_status, t.error_message AS task_error
+            SELECT mv.*,
+                   t.status AS task_status,
+                   t.error_message AS task_error,
+                   t.progress_step AS task_progress_step,
+                   t.progress_metrics AS task_progress_metrics,
+                   t.author_name AS task_author_name,
+                   t.avatar_url AS task_avatar_url,
+                   t.duration_sec AS task_duration_sec
             FROM monitor_videos mv
             LEFT JOIN tasks t ON t.id = mv.task_id
             WHERE mv.monitor_id = ?

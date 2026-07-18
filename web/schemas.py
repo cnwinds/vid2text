@@ -37,6 +37,7 @@ class VideoRef(BaseModel):
     avatar_url: str = ""
     download_url: str = Field("", description="视频直链（CDN），可用于下载")
     duration_sec: float = Field(0, description="视频时长（秒）")
+    published_at: str = Field("", description="作品发布时间（ISO 8601，如有）")
 
 
 class DownloadUrlResponse(BaseModel):
@@ -180,6 +181,12 @@ class MonitorVideoItem(BaseModel):
     task_id: int | None = None
     task_status: str | None = None
     task_error: str | None = None
+    task_progress_step: str | None = None
+    task_progress_metrics: dict[str, Any] | None = None
+    task_author_name: str | None = None
+    task_avatar_url: str | None = None
+    task_duration_sec: float | None = None
+    task_queue_ahead: int | None = None
     discovered_at: str = ""
 
 

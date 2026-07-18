@@ -7,7 +7,7 @@ import threading
 import time
 
 from web import db
-from web.monitor_service import scan_monitor
+from web.monitor_service import recover_stale_running_monitors, scan_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +29,10 @@ def _scanner_loop() -> None:
                     break
                 mid = mon["id"]
                 try:
-                    # 先推迟下次扫描，防止同轮重复领取
+                    # 短租约，防止同轮重复领取；扫描结束会写入正式 next_scan_at
                     from datetime import datetime, timedelta, timezone
 
-                    hold = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+                    hold = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
                     db.update_monitor(mid, next_scan_at=hold)
                     scan_monitor(mid)
                 except Exception:
@@ -48,6 +48,9 @@ def start_monitor_scanner() -> None:
     if _scanner_thread and _scanner_thread.is_alive():
         return
     _stop_event.clear()
+    recovered = recover_stale_running_monitors()
+    if recovered:
+        logger.info("已恢复 %s 个中断中的监控扫描", recovered)
     _scanner_thread = threading.Thread(
         target=_scanner_loop, name="vid2text-monitor-scanner", daemon=True
     )

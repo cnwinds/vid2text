@@ -36,6 +36,25 @@ def cookies_for_platform(platform: str) -> str:
     return db.get_setting(key, "")
 
 
+def recover_stale_running_monitors() -> int:
+    """服务重启后，将中断中的 running 扫描恢复为 pending 并尽快重扫。"""
+    now = _utc_now()
+    rows = db.list_monitors(limit=500, offset=0)
+    recovered = 0
+    for row in rows:
+        if (row.get("backfill_status") or "") != "running":
+            continue
+        db.update_monitor(
+            row["id"],
+            backfill_status="pending",
+            next_scan_at=_iso(now),
+            last_error="上次扫描被服务重启中断，将自动重试",
+        )
+        recovered += 1
+        logger.info("监控 #%s 从 running 恢复为 pending（服务重启）", row["id"])
+    return recovered
+
+
 def create_monitor_from_url(
     url: str,
     *,

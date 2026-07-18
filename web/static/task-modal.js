@@ -369,6 +369,10 @@ function buildTaskHeroHtml(task) {
   const durationHtml = durationLabel
     ? `<span class="td-hero-duration">${escapeHtml(durationLabel)}</span>`
     : "";
+  const publishedLabel = taskPublishedLabel(task);
+  const publishedHtml = publishedLabel
+    ? `<time class="td-hero-published" datetime="${escapeHtml(task.published_at || "")}">${escapeHtml(publishedLabel)}</time>`
+    : "";
   return `
     <header class="td-hero">
       ${renderPlatformAvatarCol(task.platform, historyAvatarInner(task))}
@@ -376,6 +380,7 @@ function buildTaskHeroHtml(task) {
         <h3 class="td-hero-title">${escapeHtml(title)}</h3>
         <p class="td-hero-meta">
           <span class="td-hero-author">${escapeHtml(author)}</span>
+          ${publishedHtml}
           ${durationHtml}
           <span class="td-hero-task-id">#${escapeHtml(String(task.id))}</span>
         </p>
@@ -686,6 +691,7 @@ function subtitleToView(data) {
     avatar_url: v.avatar_url || "",
     download_url: v.download_url || "",
     duration_sec: Number(v.duration_sec) || 0,
+    published_at: v.published_at || "",
     raw_transcript: sub.raw || "",
     corrected_transcript: sub.corrected || "",
     error_message: data.error || "",
@@ -737,6 +743,7 @@ async function fetchTask(taskId) {
   const res = await fetch(`${SUBTITLES_API}/${taskId}`);
   const { data, status } = await parseJsonResponse(res);
   if (status === 404) throw new Error("记录不存在");
+  if (status >= 500) throw new Error(data.detail || `加载失败（HTTP ${status}）`);
   return subtitleToView(data);
 }
 
@@ -932,267 +939,40 @@ function startProcessingAnim() {
   updateStageMetas({ detail: "排队中" }, 0, "pending");
 
   const canvas = proc.canvas;
-  const ctx = canvas.getContext("2d", { alpha: false });
-  function fitCanvas() {
-    const wrap = canvas.parentElement;
-    const cw = canvas.clientWidth || wrap?.clientWidth || 300;
-    const ch = canvas.clientHeight || 160;
-    const w = Math.max(2, Math.floor(cw));
-    const h = Math.max(2, Math.floor(ch));
-    if (canvas.width !== w) canvas.width = w;
-    if (canvas.height !== h) canvas.height = h;
-  }
-  fitCanvas();
-  ctx.fillStyle = "#05070a";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const onResize = () => fitCanvas();
-  window.addEventListener("resize", onResize);
+  const effector = window.ProcEffect?.create(canvas, { wrap: canvas.parentElement });
+  if (!effector) return;
 
-  const FRAME_MS = 1000 / 30;
-  let particles = [];
-  let spawnAcc = 0;
   let running = true;
-  let raf = 0;
-  let last = 0;
+  let loadRaf = 0;
 
-  const STAGE_RGB = {
-    parse: { r: 90, g: 200, b: 190 },
-    fetch_meta: { r: 70, g: 180, b: 220 },
-    fetch_subtitle: { r: 120, g: 160, b: 255 },
-    download: { r: 70, g: 224, b: 201 },
-    extract_audio: { r: 154, g: 140, b: 255 },
-    stt: { r: 255, g: 111, b: 168 },
-    correct: { r: 255, g: 160, b: 120 },
-  };
-
-  /** 各阶段主指标：network=带宽 kbps，cpu=占用%，activity=通用活动度 */
-  const STAGE_METRIC = {
-    parse: "activity",
-    fetch_meta: "network",
-    fetch_subtitle: "network",
-    download: "network",
-    extract_audio: "cpu",
-    stt: "cpu",
-    correct: "network",
-  };
-  const NET_FULL_KBPS = 3200;
-  const INTENSITY_FLOOR = 0.16;
-
-  function norm01(value, full) {
-    return Math.min(1, Math.max(0, (Number(value) || 0) / full));
-  }
-
-  function applyIntensityFloor(raw) {
-    return INTENSITY_FLOOR + Math.min(1, Math.max(0, raw)) * (1 - INTENSITY_FLOOR);
-  }
-
-  function stageDrive() {
-    const step = PIPELINE_STEPS[animStageIdx]?.key || "parse";
-    const metricKind = STAGE_METRIC[step] || "activity";
-    const cpuNorm = norm01(metricDisplay.cpu, 100);
-    const netNorm = norm01(metricDisplay.network_kbps, NET_FULL_KBPS);
-    const act = Math.min(1, Math.max(0, Number(metricDisplay.activity) || 0.2));
-
-    let raw = 0;
-    if (metricKind === "network") {
-      raw = netNorm;
-    } else if (metricKind === "cpu") {
-      raw = cpuNorm;
-    } else {
-      raw = act * 0.5;
-    }
-
-    // 指标尚未上报时（如刚进入步骤），用 activity 托底，避免完全静止
-    if (raw < 0.04) {
-      raw = Math.max(raw, act * 0.28);
-    }
-
-    const intensity = applyIntensityFloor(raw);
-    const base = STAGE_RGB[step] || STAGE_RGB.parse;
-    const boost = 0.7 + intensity * 0.65;
-    return {
-      intensity,
-      raw,
-      metricKind,
-      color: {
-        r: Math.min(255, (base.r * boost) | 0),
-        g: Math.min(255, (base.g * boost) | 0),
-        b: Math.min(255, (base.b * boost) | 0),
-      },
-    };
-  }
-
-  function drawTadpole(ctx, x, y, angle, tailPhase, size, alpha, c, glowAlpha) {
-    const headR = size * 0.42;
-    const tailLen = size * 1.05;
-    const tailW = Math.max(1.2, size * 0.16);
-    const wag = Math.sin(tailPhase * 6.8) * size * 0.14;
-
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(angle);
-
-    if (glowAlpha > 0) {
-      ctx.beginPath();
-      ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${glowAlpha})`;
-      ctx.arc(0, -headR * 0.35, headR * 1.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.beginPath();
-    ctx.moveTo(0, headR * 0.08);
-    ctx.quadraticCurveTo(wag, tailLen * 0.48, wag * 0.4, tailLen);
-    ctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},${alpha * 0.82})`;
-    ctx.lineWidth = tailW;
-    ctx.lineCap = "round";
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${alpha})`;
-    ctx.arc(0, -headR * 0.38, headR, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.fillStyle = `rgba(255,255,255,${alpha * 0.14})`;
-    ctx.arc(-headR * 0.2, -headR * 0.52, headR * 0.22, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.restore();
-  }
-
-  function spawnSoft(drive) {
-    const { intensity, color } = drive;
-    const W = canvas.width;
-    const H = canvas.height;
-    const cap = Math.round(4 + intensity * 14);
-    if (particles.length >= cap) return;
-    const room = cap - particles.length;
-    const batch = Math.min(room, 1 + (intensity * 2) | 0);
-    const riseBase = 0.18 + intensity * 1.95;
-
-    for (let i = 0; i < batch; i++) {
-      const swayAmp = (0.35 + Math.random() * (0.45 + intensity * 3.0)) * 0.22;
-      particles.push({
-        x: Math.random() * W,
-        y: H + 4 + Math.random() * 10,
-        vy: -(riseBase + Math.random() * (0.3 + intensity * 0.85)),
-        drift: (Math.random() - 0.5) * (0.025 + intensity * 0.08),
-        r: (0.55 + Math.random() * (0.5 + intensity * 1.95)) * 5,
-        swayAmp,
-        swayFreq: 0.45 + Math.random() * (1.0 + intensity * 1.5),
-        swayPhase: Math.random() * Math.PI * 2,
-        wobbleAmp: (0.1 + Math.random() * (0.1 + intensity * 0.32)) * 0.22,
-        wobbleFreq: 1.3 + Math.random() * 2.4,
-        phase: Math.random() * Math.PI * 2,
-        tailPhase: Math.random() * Math.PI * 2,
-        vxSmooth: (Math.random() - 0.5) * 0.08,
-        vySmooth: -(0.4 + Math.random() * 0.35),
-        c: color,
-      });
-    }
-  }
-
-  function frame(now) {
-    raf = 0;
+  function tickLoad() {
+    loadRaf = 0;
     if (!running) return;
-    if (document.hidden) {
-      raf = requestAnimationFrame(frame);
-      return;
-    }
     const liveProc = getProcElements();
     if (!liveProc?.canvas || liveProc.canvas !== canvas) {
-      raf = requestAnimationFrame(frame);
+      loadRaf = requestAnimationFrame(tickLoad);
       return;
     }
-    if (now - last < FRAME_MS) {
-      raf = requestAnimationFrame(frame);
-      return;
-    }
-    last = now;
-
     lerpMetrics();
-    fitCanvas();
-    const W = canvas.width;
-    const H = canvas.height;
-    if (W < 2 || H < 2) {
-      raf = requestAnimationFrame(frame);
-      return;
-    }
-
-    const drive = stageDrive();
-    const { intensity } = drive;
-
-    ctx.fillStyle = `rgba(5,7,9,${0.1 + intensity * 0.34})`;
-    ctx.fillRect(0, 0, W, H);
-
-    const spawnEvery = Math.max(1, Math.round(9 - intensity * 7));
-    spawnAcc += 1;
-    if (spawnAcc >= spawnEvery) {
-      spawnAcc = 0;
-      spawnSoft(drive);
-    }
-
-    let write = 0;
-    for (let i = 0; i < particles.length; i++) {
-      const p = particles[i];
-      p.phase += (0.028 + intensity * 0.05) * (0.75 + p.swayFreq * 0.25);
-      p.tailPhase += 0.11 + intensity * 0.14;
-      const sway =
-        Math.sin(p.phase * p.swayFreq + p.swayPhase) * p.swayAmp * (0.35 + intensity * 0.35);
-      const wobble =
-        Math.sin(p.phase * p.wobbleFreq + p.swayPhase * 1.7) *
-        p.wobbleAmp *
-        (0.25 + intensity * 0.35);
-      const dx = p.drift + sway + wobble;
-      const dy = p.vy * (0.65 + intensity * 0.55);
-      p.vxSmooth = p.vxSmooth * 0.78 + dx * 0.22;
-      p.vySmooth = p.vySmooth * 0.78 + dy * 0.22;
-      p.x += dx;
-      p.y += dy;
-      const size = p.r * (0.85 + intensity * 0.45);
-      if (p.y < -size * 1.6) continue;
-
-      const baseAlpha = 0.38 + intensity * 0.62;
-      const fadeTop = size * 1.8;
-      let alpha = baseAlpha;
-      if (p.y < fadeTop) {
-        alpha = baseAlpha * Math.max(0, p.y / fadeTop);
-        if (alpha <= 0.01) continue;
-      }
-
-      const swimTilt = Math.sin(p.phase * p.swayFreq + p.swayPhase) * 0.42;
-      const angle = Math.atan2(p.vxSmooth, -p.vySmooth) + swimTilt;
-      const glowAlpha = intensity > 0.45 ? alpha * 0.2 * intensity : 0;
-
-      drawTadpole(ctx, p.x, p.y, angle, p.tailPhase, size, alpha, p.c, glowAlpha);
-      particles[write++] = p;
-    }
-    particles.length = write;
-
-    raf = requestAnimationFrame(frame);
+    const step = PIPELINE_STEPS[animStageIdx]?.key || "parse";
+    effector.setLoad(window.ProcEffect.computeLoad(metricDisplay, step));
+    loadRaf = requestAnimationFrame(tickLoad);
   }
 
   function onVis() {
     if (!running) return;
-    if (document.hidden) {
-      if (raf) cancelAnimationFrame(raf);
-      raf = 0;
-    } else if (!raf) {
-      last = 0;
-      raf = requestAnimationFrame(frame);
-    }
+    if (!document.hidden && !loadRaf) loadRaf = requestAnimationFrame(tickLoad);
   }
 
   document.addEventListener("visibilitychange", onVis);
-  raf = requestAnimationFrame(frame);
+  loadRaf = requestAnimationFrame(tickLoad);
 
   procAnim = () => {
     running = false;
-    window.removeEventListener("resize", onResize);
     document.removeEventListener("visibilitychange", onVis);
-    if (raf) cancelAnimationFrame(raf);
-    raf = 0;
-    particles.length = 0;
+    if (loadRaf) cancelAnimationFrame(loadRaf);
+    loadRaf = 0;
+    effector.destroy();
   };
 }
 

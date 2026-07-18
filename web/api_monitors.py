@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
@@ -126,6 +128,53 @@ def trigger_scan(monitor_id: int) -> ScanResultResponse:
     )
 
 
+def _parse_task_progress_metrics(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _monitor_video_item(row: dict) -> MonitorVideoItem:
+    task_id = row.get("task_id")
+    task_status = row.get("task_status")
+    queue_ahead = None
+    if task_id and task_status == "pending":
+        queue_ahead = db.queue_ahead_count(int(task_id))
+    metrics = _parse_task_progress_metrics(row.get("task_progress_metrics"))
+    dur = float(row.get("task_duration_sec") or 0)
+    if dur <= 0:
+        dur = float(metrics.get("duration_sec") or 0)
+    return MonitorVideoItem(
+        id=row["id"],
+        platform=row["platform"],
+        video_id=row["video_id"],
+        video_url=row.get("video_url") or "",
+        title=row.get("title") or "",
+        published_at=row.get("published_at") or "",
+        like_count=int(row.get("like_count") or 0),
+        comment_count=int(row.get("comment_count") or 0),
+        play_count=int(row.get("play_count") or 0),
+        share_count=int(row.get("share_count") or 0),
+        collect_count=int(row.get("collect_count") or 0),
+        task_id=task_id,
+        task_status=task_status,
+        task_error=row.get("task_error"),
+        task_progress_step=row.get("task_progress_step") or "",
+        task_progress_metrics=metrics or None,
+        task_author_name=row.get("task_author_name") or "",
+        task_avatar_url=row.get("task_avatar_url") or "",
+        task_duration_sec=dur or None,
+        task_queue_ahead=queue_ahead,
+        discovered_at=row.get("discovered_at") or "",
+    )
+
+
 @router.get("/monitors/{monitor_id}/videos", response_model=MonitorVideoListResponse)
 def list_videos(
     monitor_id: int,
@@ -136,26 +185,7 @@ def list_videos(
         raise HTTPException(status_code=404, detail="监控不存在")
     total = db.count_monitor_videos(monitor_id)
     rows = db.list_monitor_videos(monitor_id, limit=limit, offset=offset)
-    items = [
-        MonitorVideoItem(
-            id=r["id"],
-            platform=r["platform"],
-            video_id=r["video_id"],
-            video_url=r.get("video_url") or "",
-            title=r.get("title") or "",
-            published_at=r.get("published_at") or "",
-            like_count=int(r.get("like_count") or 0),
-            comment_count=int(r.get("comment_count") or 0),
-            play_count=int(r.get("play_count") or 0),
-            share_count=int(r.get("share_count") or 0),
-            collect_count=int(r.get("collect_count") or 0),
-            task_id=r.get("task_id"),
-            task_status=r.get("task_status"),
-            task_error=r.get("task_error"),
-            discovered_at=r.get("discovered_at") or "",
-        )
-        for r in rows
-    ]
+    items = [_monitor_video_item(r) for r in rows]
     return MonitorVideoListResponse(
         items=items, pagination=_pagination(limit, offset, total)
     )

@@ -9,6 +9,8 @@ const expandedIds = new Set();
 /** @type {Map<number, object[]>} */
 const videoCache = new Map();
 /** @type {Map<number, string>} */
+const videoSnapshots = new Map();
+/** @type {Map<number, string>} */
 const activeTab = new Map();
 
 let toastTimer = null;
@@ -138,8 +140,6 @@ const ICON_SHARE =
   '<path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11A2.99 2.99 0 0 0 18 4c1.66 0 3 1.34 3 3s-1.34 3-3 3c-.79 0-1.5-.31-2.04-.81l-7.12 4.16c.05.21.08.43.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/>';
 const ICON_COLLECT =
   '<path d="M12 3.2l2.35 4.76 5.25.76-3.8 3.7.9 5.23L12 15.8l-4.7 2.47.9-5.23-3.8-3.7 5.25-.76L12 3.2z"/>';
-const ICON_DETAIL =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
 
 function videoStatSpan(label, iconPath, value) {
   const v = Number(value) || 0;
@@ -167,10 +167,151 @@ function videoEngagementHtml(v) {
   return main || '<span class="m-vcard-stats-empty">—</span>';
 }
 
-function videoExtractClass(st) {
-  if (st === "done") return "m-vcard-done";
-  if (st === "failed") return "m-vcard-fail";
-  return "m-vcard-pending";
+function renderMonitorVideoCard(v, monitor) {
+  const view = monitorVideoToView(v, monitor);
+  const statusClass = view.task_id ? histStatusClass(view.status, view) : "hist-pending";
+  const title = escapeHtml(v.title || v.video_id);
+  const url = escapeHtml(v.video_url || "#");
+  const statusHtml =
+    view.status !== "done" && view.status !== "failed" ? histCardStatusHtml(view) : "";
+  const clickable = Boolean(view.task_id);
+  const errHtml =
+    view.status === "failed" && view.error_message
+      ? `<p class="m-vcard-err" title="${escapeHtml(view.error_message)}">${escapeHtml(view.error_message)}</p>`
+      : v.task_error
+        ? `<p class="m-vcard-err" title="${escapeHtml(v.task_error)}">${escapeHtml(v.task_error)}</p>`
+        : "";
+
+  return `
+    <article
+      class="m-vcard ${statusClass}${clickable ? " is-clickable" : ""}"
+      data-video-id="${escapeHtml(v.video_id)}"
+      ${clickable ? `data-task-id="${escapeHtml(String(view.task_id))}"` : ""}
+      title="${clickable ? "点击查看提取详情" : "尚未开始提取"}"
+    >
+      <div class="m-vcard-head">
+        <time class="m-vcard-date" datetime="${escapeHtml(v.published_at || "")}">${fmtDate(v.published_at)}</time>
+        ${statusHtml}
+      </div>
+      <h3 class="m-vcard-title">
+        <a href="${url}" target="_blank" rel="noopener noreferrer" tabindex="-1">${title}</a>
+      </h3>
+      <div class="m-vcard-stats">
+        <div class="m-vcard-stats-main">${videoEngagementHtml(v)}</div>
+      </div>
+      ${errHtml}
+    </article>`;
+}
+
+function renderVideoCards(items, monitor) {
+  if (!items.length) {
+    return `
+      <div class="m-empty">
+        <div class="m-empty-icon" aria-hidden="true">◎</div>
+        <p>还没有作品记录</p>
+        <span>保存规则后点「立即扫描」拉取列表</span>
+      </div>`;
+  }
+  return `<div class="m-vgrid">${items.map((v) => renderMonitorVideoCard(v, monitor)).join("")}</div>`;
+}
+
+function videoListSnapshot(items) {
+  return JSON.stringify(
+    items.map((v) => ({
+      id: v.id,
+      video_id: v.video_id,
+      task_id: v.task_id,
+      task_status: v.task_status,
+      task_progress_step: v.task_progress_step,
+      task_error: v.task_error,
+      like_count: v.like_count,
+      comment_count: v.comment_count,
+      play_count: v.play_count,
+      share_count: v.share_count,
+      collect_count: v.collect_count,
+    }))
+  );
+}
+
+function applyVideoCardPatch(card, v, monitor) {
+  const view = monitorVideoToView(v, monitor);
+  const statusClass = view.task_id ? histStatusClass(view.status, view) : "hist-pending";
+  card.classList.remove("hist-done", "hist-fail", "hist-pending", "hist-processing", "is-clickable");
+  card.classList.add(statusClass);
+  if (view.task_id) {
+    card.classList.add("is-clickable");
+    card.dataset.taskId = String(view.task_id);
+    card.title = "点击查看提取详情";
+  } else {
+    delete card.dataset.taskId;
+    card.title = "尚未开始提取";
+  }
+
+  const head = card.querySelector(".m-vcard-head");
+  const dateEl = card.querySelector(".m-vcard-date");
+  if (dateEl) {
+    dateEl.dateTime = v.published_at || "";
+    dateEl.textContent = fmtDate(v.published_at);
+  }
+
+  const statusHtml =
+    view.status !== "done" && view.status !== "failed" ? histCardStatusHtml(view) : "";
+  let pill = card.querySelector(".hist-card-status");
+  if (statusHtml) {
+    if (pill) pill.outerHTML = statusHtml;
+    else head?.insertAdjacentHTML("beforeend", statusHtml);
+  } else if (pill) {
+    pill.remove();
+  }
+
+  const statsMain = card.querySelector(".m-vcard-stats-main");
+  if (statsMain) statsMain.innerHTML = videoEngagementHtml(v);
+
+  const errText =
+    view.status === "failed" && view.error_message
+      ? view.error_message
+      : v.task_error || "";
+  let errEl = card.querySelector(".m-vcard-err");
+  if (errText) {
+    const safe = escapeHtml(errText);
+    if (errEl) {
+      errEl.textContent = errText;
+      errEl.title = errText;
+    } else {
+      card.insertAdjacentHTML(
+        "beforeend",
+        `<p class="m-vcard-err" title="${safe}">${safe}</p>`
+      );
+    }
+  } else if (errEl) {
+    errEl.remove();
+  }
+}
+
+function patchVideoCardsInBlock(wrap, items, monitor) {
+  const grid = wrap.querySelector(".m-vgrid");
+  if (!grid) return false;
+  const cards = [...grid.querySelectorAll(".m-vcard")];
+  if (cards.length !== items.length) return false;
+  const byVid = new Map(cards.map((c) => [c.dataset.videoId, c]));
+  for (const v of items) {
+    const card = byVid.get(v.video_id);
+    if (!card) return false;
+    applyVideoCardPatch(card, v, monitor);
+  }
+  return true;
+}
+
+function resolveMonitorMeta(block, monitorId, monitor) {
+  return (
+    monitor ||
+    block._monitorMeta || {
+      id: monitorId,
+      platform: block.dataset.platform || "",
+      author_name: block.dataset.authorName || "",
+      avatar_url: block.dataset.avatarUrl || "",
+    }
+  );
 }
 
 function backfillLabel(m) {
@@ -185,10 +326,17 @@ function monitorStatusDot(m) {
   if (!m.enabled) {
     return '<span class="m-status-dot is-warn" title="已暂停"></span>';
   }
-  if ((m.backfill_status || "") === "done") {
+  const st = m.backfill_status || "";
+  if (st === "done") {
     return '<span class="m-status-dot is-ok" title="补采完成"></span>';
   }
-  return '<span class="m-status-dot is-warn" title="补采未完成"></span>';
+  if (st === "running") {
+    return '<span class="m-status-dot is-run" title="正在拉取作品…"></span>';
+  }
+  if (st === "failed" && m.last_error) {
+    return `<span class="m-status-dot is-fail" title="${escapeHtml(m.last_error.slice(0, 120))}"></span>`;
+  }
+  return '<span class="m-status-dot is-warn" title="等待首次扫描"></span>';
 }
 
 function setCardOpen(block, open) {
@@ -250,44 +398,6 @@ function renderRulesForm(m) {
     </form>`;
 }
 
-function renderVideoCards(items) {
-  if (!items.length) {
-    return `
-      <div class="m-empty">
-        <div class="m-empty-icon" aria-hidden="true">◎</div>
-        <p>还没有作品记录</p>
-        <span>保存规则后点「立即扫描」拉取列表</span>
-      </div>`;
-  }
-  return `<div class="m-vgrid">${items
-    .map((v) => {
-      const st = v.task_status || "";
-      const title = escapeHtml(v.title || v.video_id);
-      const url = escapeHtml(v.video_url || "#");
-      return `
-        <article class="m-vcard ${videoExtractClass(st)}" title="${st === "done" ? "采集完成" : st === "failed" ? "采集失败" : "待采集"}">
-          <time class="m-vcard-date" datetime="${escapeHtml(v.published_at || "")}">${fmtDate(v.published_at)}</time>
-          <h3 class="m-vcard-title">
-            <a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a>
-          </h3>
-          <div class="m-vcard-stats">
-            <div class="m-vcard-stats-main">${videoEngagementHtml(v)}</div>
-            <button
-              type="button"
-              class="m-vcard-detail${v.task_id ? "" : " is-disabled"}"
-              data-video-detail
-              data-task-id="${v.task_id ? escapeHtml(String(v.task_id)) : ""}"
-              ${v.task_id ? "" : "disabled"}
-              title="${v.task_id ? "查看提取详情" : "尚未开始提取"}"
-              aria-label="${v.task_id ? "查看提取详情" : "尚未开始提取"}"
-            >${ICON_DETAIL}</button>
-          </div>
-          ${v.task_error ? `<p class="m-vcard-err" title="${escapeHtml(v.task_error)}">${escapeHtml(v.task_error)}</p>` : ""}
-        </article>`;
-    })
-    .join("")}</div>`;
-}
-
 async function fetchVideos(monitorId) {
   const res = await adminFetch(`/api/v1/monitors/${monitorId}/videos?limit=200`);
   const { data, status } = await parseJson(res);
@@ -297,18 +407,78 @@ async function fetchVideos(monitorId) {
   return items;
 }
 
-async function refreshVideosInBlock(monitorId, block) {
+async function refreshVideosInBlock(monitorId, block, monitor, options = {}) {
+  const silent = options.silent === true;
   const wrap = block.querySelector("[data-videos]");
   if (!wrap) return;
-  wrap.innerHTML = '<div class="m-loading">加载作品中…</div>';
+  if (!silent) {
+    wrap.innerHTML = '<div class="m-loading">加载作品中…</div>';
+  }
   try {
     const items = await fetchVideos(monitorId);
-    wrap.innerHTML = renderVideoCards(items);
+    const mon = resolveMonitorMeta(block, monitorId, monitor);
+    const snap = videoListSnapshot(items);
+
+    if (silent) {
+      if (patchVideoCardsInBlock(wrap, items, mon)) {
+        videoSnapshots.set(monitorId, snap);
+        return items;
+      }
+      if (videoSnapshots.get(monitorId) === snap && wrap.querySelector(".m-vgrid")) {
+        return items;
+      }
+    }
+
+    videoSnapshots.set(monitorId, snap);
+    wrap.innerHTML = renderVideoCards(items, mon);
     const countEl = block.querySelector("[data-video-count]");
     if (countEl) countEl.textContent = String(items.length);
+    if (monitorVideosNeedRefresh()) scheduleMonitorVideoRefresh();
+    return items;
   } catch (err) {
-    wrap.innerHTML = `<div class="m-empty"><p>${escapeHtml(err.message)}</p></div>`;
+    if (!silent) {
+      wrap.innerHTML = `<div class="m-empty"><p>${escapeHtml(err.message)}</p></div>`;
+    }
+    return null;
   }
+}
+
+function monitorVideosNeedRefresh() {
+  for (const [id, items] of videoCache) {
+    if (!expandedIds.has(id)) continue;
+    if (
+      items.some(
+        (v) => v.task_status === "pending" || v.task_status === "processing"
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+let monitorVideoRefreshTimer = null;
+
+function scheduleMonitorVideoRefresh() {
+  if (monitorVideoRefreshTimer) return;
+  if (!monitorVideosNeedRefresh()) return;
+  monitorVideoRefreshTimer = setInterval(async () => {
+    if (!monitorVideosNeedRefresh()) {
+      clearInterval(monitorVideoRefreshTimer);
+      monitorVideoRefreshTimer = null;
+      return;
+    }
+    for (const id of expandedIds) {
+      const block = listEl?.querySelector(`[data-monitor-id="${id}"]`);
+      if (block) {
+        try {
+          await refreshVideosInBlock(id, block, block._monitorMeta, { silent: true });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }, 6000);
 }
 
 function switchTab(block, monitorId, tab) {
@@ -355,6 +525,7 @@ async function handleMonitorAction(m, act, block) {
     }
     expandedIds.delete(m.id);
     videoCache.delete(m.id);
+    videoSnapshots.delete(m.id);
     activeTab.delete(m.id);
     showStatus("已删除");
     await loadMonitors();
@@ -370,7 +541,7 @@ async function handleMonitorAction(m, act, block) {
       if (status >= 400) throw new Error(data.detail || "扫描失败");
       showStatus(`扫描完成 · 拉取 ${data.fetched} · 新入队 ${data.enqueued}`);
       Object.assign(m, data.monitor);
-      if (block) await refreshVideosInBlock(m.id, block);
+      if (block) await refreshVideosInBlock(m.id, block, m);
       await loadMonitors();
     } finally {
       btn?.classList.remove("is-busy");
@@ -385,6 +556,10 @@ function createMonitorBlock(m) {
   const plat = platformClass(m.platform);
   block.className = `m-card ${plat}${m.enabled ? "" : " is-paused"}${isOpen ? " is-open" : ""}`;
   block.dataset.monitorId = String(m.id);
+  block.dataset.platform = m.platform || "";
+  block.dataset.authorName = m.author_name || "";
+  block.dataset.avatarUrl = m.avatar_url || "";
+  block._monitorMeta = m;
 
   block.innerHTML = `
     <div class="m-card-shell">
@@ -420,7 +595,7 @@ function createMonitorBlock(m) {
         <div class="m-tab-panel" data-tab="videos" role="tabpanel"${tab !== "videos" ? " hidden" : ""}>
           <div data-videos>${
             isOpen && videoCache.has(m.id)
-              ? renderVideoCards(videoCache.get(m.id))
+              ? renderVideoCards(videoCache.get(m.id), m)
               : '<div class="m-loading">展开后加载…</div>'
           }</div>
         </div>
@@ -438,7 +613,7 @@ function createMonitorBlock(m) {
     } else {
       expandedIds.add(m.id);
       setCardOpen(block, true);
-      await refreshVideosInBlock(m.id, block);
+      await refreshVideosInBlock(m.id, block, m);
     }
   });
 
@@ -471,7 +646,7 @@ function createMonitorBlock(m) {
     handleMonitorAction(m, "del", block).catch((err) => showStatus(err.message, true))
   );
 
-  if (isOpen) refreshVideosInBlock(m.id, block);
+  if (isOpen) refreshVideosInBlock(m.id, block, m);
 
   const avImg = block.querySelector(".m-avatar-img");
   if (avImg) {
@@ -595,7 +770,7 @@ if (window.Vid2TaskModal) {
     onTaskDone: () => {
       for (const id of expandedIds) {
         const block = listEl?.querySelector(`[data-monitor-id="${id}"]`);
-        if (block) refreshVideosInBlock(id, block);
+        if (block) refreshVideosInBlock(id, block, block._monitorMeta, { silent: true });
       }
     },
     setSubmitDisabled: () => {},
@@ -604,11 +779,12 @@ if (window.Vid2TaskModal) {
 }
 
 listEl?.addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-video-detail]");
-  if (!btn) return;
+  if (e.target.closest(".m-vcard-title a")) return;
+  const card = e.target.closest(".m-vcard.is-clickable[data-task-id]");
+  if (!card) return;
   e.preventDefault();
   e.stopPropagation();
-  const taskId = Number(btn.dataset.taskId);
+  const taskId = Number(card.dataset.taskId);
   if (!taskId) {
     showStatus("该作品尚未开始提取");
     return;

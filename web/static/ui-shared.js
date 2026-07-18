@@ -80,6 +80,91 @@ function taskRunningStatusLabel(task) {
   return "处理中";
 }
 
+/** 历史/监控卡片外框状态 class */
+function histStatusClass(status, task) {
+  if (status === "done") return "hist-done";
+  if (status === "failed") return "hist-fail";
+  if (status === "pending") return "hist-pending";
+  if (task && isTaskStepQueued(task)) return "hist-pending";
+  return "hist-processing";
+}
+
+/** 历史/监控卡片内状态胶囊（进行中任务） */
+function histCardStatusHtml(view) {
+  if (!view || !view.status) return "";
+  if (view.status === "pending") {
+    const label = view.task_id ? taskRunningStatusLabel(view) : "待入队";
+    return `<span class="hist-card-status hist-card-status-pending">${uiEscapeHtml(label)}</span>`;
+  }
+  if (view.status === "processing") {
+    const label = taskRunningStatusLabel(view);
+    const queued = isTaskStepQueued(view);
+    const cls = queued ? "hist-card-status-pending" : "hist-card-status-processing";
+    return `<span class="hist-card-status ${cls}">${uiEscapeHtml(label)}</span>`;
+  }
+  return "";
+}
+
+function fmtDurationSec(sec) {
+  const total = Math.max(0, Math.round(Number(sec) || 0));
+  if (!total) return "";
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function taskDurationLabel(task) {
+  const direct = Number(task?.duration_sec);
+  if (direct > 0) return fmtDurationSec(direct);
+  const m = parseProgressMetrics(task?.progress_metrics);
+  if (Number(m.duration_sec) > 0) return fmtDurationSec(m.duration_sec);
+  return "";
+}
+
+/** 作品发布时间（详情/卡片共用） */
+function fmtPublishedAt(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return String(iso);
+  }
+}
+
+function taskPublishedLabel(task) {
+  return fmtPublishedAt(task?.published_at);
+}
+
+/** 监控作品条目 → 与历史卡片共用的 view 结构 */
+function monitorVideoToView(video, monitor) {
+  const hasTask = Boolean(video?.task_id);
+  const metrics = parseProgressMetrics(video?.task_progress_metrics);
+  return {
+    id: video?.task_id || null,
+    task_id: video?.task_id || null,
+    status: hasTask ? video.task_status || "pending" : "pending",
+    platform: video?.platform || monitor?.platform || "",
+    video_id: video?.video_id || "",
+    video_url: video?.video_url || "",
+    title: video?.title || "",
+    author_name: video?.task_author_name || monitor?.author_name || "",
+    avatar_url: video?.task_avatar_url || monitor?.avatar_url || "",
+    duration_sec: Number(video?.task_duration_sec) || 0,
+    progress_step: video?.task_progress_step || "",
+    progress_metrics: metrics,
+    queue_ahead: Number(video?.task_queue_ahead) || 0,
+    error_message: video?.task_error || "",
+  };
+}
+
 function platformLogoHtml(platform) {
   const label = platformLabel(platform);
   if (platform === "douyin") {

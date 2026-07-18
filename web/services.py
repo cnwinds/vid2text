@@ -153,6 +153,7 @@ def row_to_subtitle(row: dict, *, cached: bool = False, base_url: str = "") -> d
         "avatar_url": row.get("avatar_url") or "",
         "download_url": row.get("download_url") or "",
         "duration_sec": duration_sec,
+        "published_at": row.get("published_at") or "",
     }
 
     if status == "done" and (corrected or raw):
