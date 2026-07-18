@@ -20,3 +20,15 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1gb"
+    command:
+      - python
+      - -m
+      - uvicorn
+      - web.app:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/web

@@ -19,8 +19,29 @@ function setFlag(id, on) {
   el.classList.toggle("is-on", on);
 }
 
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024 ** 2) return `${(v / 1024).toFixed(1)} KB`;
+  if (v < 1024 ** 3) return `${(v / 1024 ** 2).toFixed(1)} MB`;
+  return `${(v / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function renderWorkCache(wc) {
+  const el = document.getElementById("work-cache-summary");
+  if (!el || !wc) return;
+  const quota = fmtBytes(wc.quota_bytes);
+  const used = fmtBytes(wc.used_bytes);
+  const pct = wc.quota_bytes > 0 ? Math.min(100, (wc.used_bytes / wc.quota_bytes) * 100) : 0;
+  const status = wc.enabled ? "已启用配额回收" : "配额回收已关闭";
+  el.innerHTML = `
+    <div class="work-cache-bar" role="progressbar" aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
+      <div class="work-cache-fill" style="width:${pct.toFixed(1)}%"></div>
+    </div>
+    <p class="work-cache-meta">${used} / ${quota}（上限 ${wc.quota_gb} GB）· ${status}</p>`;
+}
+
 async function loadSettings() {
-  const res = await fetch("/api/v1/settings");
+  const res = await adminFetch("/api/v1/settings");
   const { data, status } = await parseJson(res);
   if (status >= 400) {
     showStatus(data.detail || "加载失败", true);
@@ -32,6 +53,7 @@ async function loadSettings() {
   setFlag("secret-flag", data.webhook_secret_set);
   document.getElementById("webhook-url").value = data.webhook_url || "";
   document.getElementById("scan-interval").value = data.default_scan_interval_sec || 2700;
+  renderWorkCache(data.work_cache);
 }
 
 form?.addEventListener("submit", async (e) => {
@@ -59,7 +81,7 @@ form?.addEventListener("submit", async (e) => {
   else if (secret) body.webhook_secret = secret;
 
   try {
-    const res = await fetch("/api/v1/settings", {
+    const res = await adminFetch("/api/v1/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

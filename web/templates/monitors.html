@@ -17,12 +17,7 @@
       <div class="eyebrow"><span class="dot"></span>ACCOUNT MONITOR</div>
       <h1 class="subpage-title">账号监控</h1>
       <p class="sub">盯紧博主更新 · 自动扫描 · 一键提取文案</p>
-      <nav class="header-nav">
-        <a href="/">提取</a>
-        <a href="/monitors" class="is-active">监控</a>
-        <a href="/settings">设置</a>
-        <a href="/api-docs">API</a>
-      </nav>
+      {% include "_site_nav.html" %}
     </header>
 
     <div id="monitor-toast" class="m-toast" role="status" hidden></div>
@@ -88,7 +83,21 @@
 
     <footer>VID2TEXT — ACCOUNT MONITOR</footer>
   </div>
+
+  <div id="task-modal" class="m-modal" hidden aria-hidden="true">
+    <div class="m-modal-backdrop" data-modal-close></div>
+    <div class="m-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="task-modal-title">
+      <header class="m-modal-head">
+        <h2 id="task-modal-title" class="m-modal-title">任务详情</h2>
+        <button type="button" class="m-modal-close" data-modal-close aria-label="关闭">&times;</button>
+      </header>
+      <div class="m-modal-body" id="task-modal-body"></div>
+      <div class="m-modal-foot" id="task-modal-foot" hidden></div>
+    </div>
+  </div>
+
   <script src="/static/ui-shared.js?v={{ static_v() }}"></script>
+  <script src="/static/task-modal.js?v={{ static_v() }}"></script>
   <script src="/static/monitors.js?v={{ static_v() }}"></script>
 </body>
 </html>

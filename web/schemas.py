@@ -43,6 +43,23 @@ class DownloadUrlResponse(BaseModel):
     download_url: str = Field(..., description="视频 CDN 直链，可用于下载")
 
 
+class DownloadCheckResponse(BaseModel):
+    ok: bool = Field(True, description="任务可下载时为 true")
+
+
+class ProgressMetrics(BaseModel):
+    """处理中任务的资源指标（Web 进度动画 / 外部轮询展示）。"""
+
+    step: str = Field("", description="当前步骤，如 download / stt / correct")
+    kind: str = Field("", description="指标类型：network / cpu / idle 等")
+    detail: str = Field("", description="人类可读摘要，如「2.1 MB/s · 45%」")
+    activity: float = Field(0, description="活动强度 0–1，供 UI 动画")
+    duration_sec: float = Field(0, description="已探测的视频时长（秒）")
+    network_kbps: float | None = Field(None, description="网络吞吐（KB/s）")
+
+    model_config = {"extra": "allow"}
+
+
 class SubtitleContent(BaseModel):
     text: str = Field(description="推荐使用的正文（修正后优先，否则原始）")
     raw: str = ""
@@ -68,9 +85,9 @@ class SubtitleResponse(BaseModel):
     processing: ProcessingInfo | None = None
     error: str | None = None
     retry_url: str | None = Field(None, description="失败时可 POST 此 URL 重新提取")
-    progress_metrics: dict[str, Any] = Field(
+    progress_metrics: ProgressMetrics | dict[str, Any] = Field(
         default_factory=dict,
-        description="处理中的资源指标（供 Web 进度展示）",
+        description="处理中的资源指标（`ready: false` 时常见；完成后通常为空对象）",
     )
 
 
@@ -154,6 +171,8 @@ class MonitorVideoItem(BaseModel):
     like_count: int = 0
     comment_count: int = 0
     play_count: int = 0
+    share_count: int = 0
+    collect_count: int = 0
     task_id: int | None = None
     task_status: str | None = None
     task_error: str | None = None
@@ -165,6 +184,13 @@ class MonitorVideoListResponse(BaseModel):
     pagination: PaginationMeta
 
 
+class WorkCachePublic(BaseModel):
+    enabled: bool = Field(True, description="是否启用 work 目录配额回收")
+    quota_gb: float = Field(1.0, description="缓存目录上限（GB）")
+    quota_bytes: int = Field(0, description="配额字节数")
+    used_bytes: int = Field(0, description="当前缓存占用字节数")
+
+
 class SettingsPublicResponse(BaseModel):
     douyin_cookies_set: bool = False
     bilibili_cookies_set: bool = False
@@ -172,6 +198,13 @@ class SettingsPublicResponse(BaseModel):
     webhook_url: str = ""
     webhook_secret_set: bool = False
     default_scan_interval_sec: int = 2700
+    work_cache: WorkCachePublic = Field(default_factory=WorkCachePublic)
+
+
+class SystemInfoResponse(BaseModel):
+    """只读服务端运行信息（不含密钥）。"""
+
+    work_cache: WorkCachePublic
 
 
 class SettingsUpdateRequest(BaseModel):

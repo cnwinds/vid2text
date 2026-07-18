@@ -74,3 +74,11 @@ function renderPlatformAvatarCol(platform, innerAvatarHtml) {
       ${platformLogoHtml(platform)}
     </span>`;
 }
+
+/** 监控 / 设置 API：携带登录 Session Cookie（或页面注入的 Bearer Token） */
+function adminFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const token = window.__ADMIN_API_TOKEN__;
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(url, { ...options, headers, credentials: "same-origin" });
+}

@@ -19,12 +19,7 @@
         <div class="wave-hero" id="heroWave" aria-hidden="true"></div>
       </div>
       <p class="sub">粘贴视频链接，提取口播 / 字幕文本</p>
-      <nav class="header-nav">
-        <a href="/" class="is-active">提取</a>
-        <a href="/monitors">账号监控</a>
-        <a href="/settings">设置</a>
-        <a href="/api-docs">API 接口说明</a>
-      </nav>
+      {% include "_site_nav.html" %}
     </header>
 
     <section class="panel">
@@ -61,7 +56,7 @@
       <div class="m-list-toolbar">
         <div>
           <h2 class="m-section-title">历史记录</h2>
-          <p class="m-section-desc">点击卡片查看文稿 · 右侧图标可复制或下载</p>
+          <p class="m-section-desc">仅展示最近 20 条 · 点击卡片查看文稿 · 右侧图标可复制或下载</p>
         </div>
         <button type="button" class="m-btn m-btn-ghost" id="refresh-history">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.36M21 3v6h-6"/></svg>

@@ -129,6 +129,44 @@ function fmtCount(n) {
   return String(v);
 }
 
+const ICON_LIKE =
+  '<path d="M12 21s-6.7-4.1-9.2-8.3C.8 9.2 2.4 5.5 6 5.5c2.2 0 3.6 1.2 4.3 2.3.7-1.1 2.1-2.3 4.3-2.3 3.6 0 5.2 3.7 3.2 7.2C18.7 16.9 12 21 12 21z"/>';
+const ICON_COMMENT =
+  '<path d="M21 11.5a8.4 8.4 0 0 1-8.4 8.4H7l-4 3V11.5A8.4 8.4 0 0 1 11.4 3h.2A8.4 8.4 0 0 1 21 11.5z"/>';
+const ICON_PLAY = '<path d="M7 4v16l13-8z"/>';
+const ICON_SHARE =
+  '<path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11A2.99 2.99 0 0 0 18 4c1.66 0 3 1.34 3 3s-1.34 3-3 3c-.79 0-1.5-.31-2.04-.81l-7.12 4.16c.05.21.08.43.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/>';
+const ICON_COLLECT =
+  '<path d="M12 3.2l2.35 4.76 5.25.76-3.8 3.7.9 5.23L12 15.8l-4.7 2.47.9-5.23-3.8-3.7 5.25-.76L12 3.2z"/>';
+const ICON_DETAIL =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
+
+function videoStatSpan(label, iconPath, value) {
+  const v = Number(value) || 0;
+  if (v <= 0) return "";
+  return `<span title="${label}"><svg viewBox="0 0 24 24" aria-hidden="true">${iconPath}</svg>${fmtCount(v)}</span>`;
+}
+
+function videoEngagementHtml(v) {
+  const metrics = [
+    videoStatSpan("点赞", ICON_LIKE, v.like_count),
+    videoStatSpan("评论", ICON_COMMENT, v.comment_count),
+  ];
+  const play = Number(v.play_count) || 0;
+  const share = Number(v.share_count) || 0;
+  const collect = Number(v.collect_count) || 0;
+  if (play > 0) {
+    metrics.push(videoStatSpan("播放", ICON_PLAY, play));
+  } else if (share > 0) {
+    metrics.push(videoStatSpan("分享", ICON_SHARE, share));
+  }
+  if (collect > 0) {
+    metrics.push(videoStatSpan("收藏", ICON_COLLECT, collect));
+  }
+  const main = metrics.filter(Boolean).join("");
+  return main || '<span class="m-vcard-stats-empty">—</span>';
+}
+
 function videoExtractClass(st) {
   if (st === "done") return "m-vcard-done";
   if (st === "failed") return "m-vcard-fail";
@@ -230,12 +268,19 @@ function renderVideoCards(items) {
         <article class="m-vcard ${videoExtractClass(st)}" title="${st === "done" ? "采集完成" : st === "failed" ? "采集失败" : "待采集"}">
           <time class="m-vcard-date" datetime="${escapeHtml(v.published_at || "")}">${fmtDate(v.published_at)}</time>
           <h3 class="m-vcard-title">
-            <a href="${url}" target="_blank" rel="noopener">${title}</a>
+            <a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a>
           </h3>
           <div class="m-vcard-stats">
-            <span title="点赞"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.7-4.1-9.2-8.3C.8 9.2 2.4 5.5 6 5.5c2.2 0 3.6 1.2 4.3 2.3.7-1.1 2.1-2.3 4.3-2.3 3.6 0 5.2 3.7 3.2 7.2C18.7 16.9 12 21 12 21z"/></svg>${fmtCount(v.like_count)}</span>
-            <span title="评论"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-8.4 8.4H7l-4 3V11.5A8.4 8.4 0 0 1 11.4 3h.2A8.4 8.4 0 0 1 21 11.5z"/></svg>${fmtCount(v.comment_count)}</span>
-            <span title="播放"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>${fmtCount(v.play_count)}</span>
+            <div class="m-vcard-stats-main">${videoEngagementHtml(v)}</div>
+            <button
+              type="button"
+              class="m-vcard-detail${v.task_id ? "" : " is-disabled"}"
+              data-video-detail
+              data-task-id="${v.task_id ? escapeHtml(String(v.task_id)) : ""}"
+              ${v.task_id ? "" : "disabled"}
+              title="${v.task_id ? "查看提取详情" : "尚未开始提取"}"
+              aria-label="${v.task_id ? "查看提取详情" : "尚未开始提取"}"
+            >${ICON_DETAIL}</button>
           </div>
           ${v.task_error ? `<p class="m-vcard-err" title="${escapeHtml(v.task_error)}">${escapeHtml(v.task_error)}</p>` : ""}
         </article>`;
@@ -244,7 +289,7 @@ function renderVideoCards(items) {
 }
 
 async function fetchVideos(monitorId) {
-  const res = await fetch(`/api/v1/monitors/${monitorId}/videos?limit=200`);
+  const res = await adminFetch(`/api/v1/monitors/${monitorId}/videos?limit=200`);
   const { data, status } = await parseJson(res);
   if (status >= 400) throw new Error(data.detail || "加载作品失败");
   const items = data.items || [];
@@ -288,7 +333,7 @@ async function saveRules(m, rulesForm) {
     backfill_n: backfillN,
     scan_interval_sec: Math.max(300, Math.min(86400, scanMin * 60)),
   };
-  const res = await fetch(`/api/v1/monitors/${m.id}`, {
+  const res = await adminFetch(`/api/v1/monitors/${m.id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -303,7 +348,7 @@ async function saveRules(m, rulesForm) {
 async function handleMonitorAction(m, act, block) {
   if (act === "del") {
     if (!confirm(`删除监控「${m.author_name || m.author_key}」？`)) return;
-    const res = await fetch(`/api/v1/monitors/${m.id}`, { method: "DELETE" });
+    const res = await adminFetch(`/api/v1/monitors/${m.id}`, { method: "DELETE" });
     if (res.status !== 204 && res.status !== 200) {
       const { data } = await parseJson(res);
       throw new Error(data.detail || "删除失败");
@@ -320,7 +365,7 @@ async function handleMonitorAction(m, act, block) {
     btn?.classList.add("is-busy");
     showStatus("正在扫描…");
     try {
-      const res = await fetch(`/api/v1/monitors/${m.id}/scan`, { method: "POST" });
+      const res = await adminFetch(`/api/v1/monitors/${m.id}/scan`, { method: "POST" });
       const { data, status } = await parseJson(res);
       if (status >= 400) throw new Error(data.detail || "扫描失败");
       showStatus(`扫描完成 · 拉取 ${data.fetched} · 新入队 ${data.enqueued}`);
@@ -439,7 +484,7 @@ function createMonitorBlock(m) {
 }
 
 async function loadMonitors() {
-  const res = await fetch("/api/v1/monitors?limit=100");
+  const res = await adminFetch("/api/v1/monitors?limit=100");
   const { data, status } = await parseJson(res);
   if (status >= 400) {
     listEl.innerHTML = `<div class="m-empty"><p>${escapeHtml(data.detail || "加载失败")}</p></div>`;
@@ -470,7 +515,7 @@ form?.addEventListener("submit", async (e) => {
   submitBtn.disabled = true;
   showStatus("正在解析作者…");
   try {
-    const res = await fetch("/api/v1/monitors", {
+    const res = await adminFetch("/api/v1/monitors", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url, backfill_mode: mode, backfill_n: n }),
@@ -542,5 +587,33 @@ document.getElementById("toggle-add-form")?.addEventListener("click", () => {
   tick();
   window.addEventListener("resize", resize);
 })();
+
+if (window.Vid2TaskModal) {
+  Vid2TaskModal.configure({
+    onStatus: (text) => showStatus(text),
+    onStatusHide: () => {},
+    onTaskDone: () => {
+      for (const id of expandedIds) {
+        const block = listEl?.querySelector(`[data-monitor-id="${id}"]`);
+        if (block) refreshVideosInBlock(id, block);
+      }
+    },
+    setSubmitDisabled: () => {},
+  });
+  Vid2TaskModal.init();
+}
+
+listEl?.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-video-detail]");
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const taskId = Number(btn.dataset.taskId);
+  if (!taskId) {
+    showStatus("该作品尚未开始提取");
+    return;
+  }
+  Vid2TaskModal?.openById(taskId, e);
+});
 
 loadMonitors();

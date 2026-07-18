@@ -14,6 +14,8 @@ class FeedVideo:
     like_count: int = 0
     comment_count: int = 0
     play_count: int = 0
+    share_count: int = 0
+    collect_count: int = 0
 
 
 @dataclass

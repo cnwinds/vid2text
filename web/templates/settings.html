@@ -17,12 +17,7 @@
       <div class="eyebrow"><span class="dot"></span>SETTINGS</div>
       <h1 class="subpage-title">设置</h1>
       <p class="sub">平台 Cookie · Webhook · 默认扫描间隔</p>
-      <nav class="header-nav">
-        <a href="/">提取</a>
-        <a href="/monitors">监控</a>
-        <a href="/settings">设置</a>
-        <a href="/api-docs">API</a>
-      </nav>
+      {% include "_site_nav.html" %}
     </header>
 
     <section class="panel">
@@ -58,6 +53,10 @@
         <label class="field-label" for="scan-interval">默认扫描间隔（秒）</label>
         <input id="scan-interval" type="number" min="300" max="86400" value="2700" class="settings-input n-input-wide" />
 
+        <p class="section-label">Work 缓存</p>
+        <p class="hint-text">中间音/视频文件目录配额（只读，由环境变量 <code>WORK_CACHE_QUOTA_GB</code> 控制）。</p>
+        <div id="work-cache-summary" class="work-cache-summary" aria-live="polite">加载中…</div>
+
         <div class="input-row" style="margin-top: 18px">
           <button type="submit" class="submit-btn" id="settings-save">保存设置</button>
         </div>
@@ -67,6 +66,7 @@
 
     <footer>VID2TEXT — SETTINGS</footer>
   </div>
+  <script src="/static/ui-shared.js?v={{ static_v() }}"></script>
   <script src="/static/settings.js?v={{ static_v() }}"></script>
 </body>
 </html>

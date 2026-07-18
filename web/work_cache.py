@@ -178,3 +178,47 @@ def maybe_enforce_work_cache_quota(**kwargs) -> dict[str, int | float]:
             "deleted_files": 0,
         }
     return enforce_work_cache_quota(**kwargs)
+
+
+def work_cache_public() -> dict[str, int | float | bool]:
+    """供 API 暴露的只读 work 缓存摘要。"""
+    limit = quota_bytes()
+    used = dir_size()
+    return {
+        "enabled": quota_enabled(),
+        "quota_gb": round(limit / 1024**3, 3),
+        "quota_bytes": limit,
+        "used_bytes": used,
+    }
+
+
+def _path_belongs_to_video(path: Path, video_id: str) -> bool:
+    """判断 work 目录下的缓存文件是否属于某 video_id。"""
+    if cache_group_key(path) == video_id:
+        return True
+    stem = path.stem
+    return stem == video_id or stem.startswith(f"{video_id}.") or stem.startswith(f"{video_id}_")
+
+
+def clear_video_cache(video_id: str, *, work_dir: Path | None = None) -> int:
+    """删除某 video_id 对应的 work 缓存文件，返回释放字节数。"""
+    vid = (video_id or "").strip()
+    if not vid:
+        return 0
+    root = work_dir or get_work_dir()
+    if not root.is_dir():
+        return 0
+    freed = 0
+    for path in root.iterdir():
+        if not path.is_file() or path.suffix.lower() not in CACHE_SUFFIXES:
+            continue
+        if not _path_belongs_to_video(path, vid):
+            continue
+        try:
+            freed += path.stat().st_size
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("删除缓存失败 %s: %s", path, exc)
+    if freed > 0:
+        logger.info("fresh 重试: 已清除 %s 缓存 %.1f MB", vid, freed / (1024**2))
+    return freed

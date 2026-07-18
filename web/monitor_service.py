@@ -115,6 +115,8 @@ def _sync_video_metadata(monitor: dict[str, Any], video, *, task_id: int | None)
         like_count=getattr(video, "like_count", 0) or 0,
         comment_count=getattr(video, "comment_count", 0) or 0,
         play_count=getattr(video, "play_count", 0) or 0,
+        share_count=getattr(video, "share_count", 0) or 0,
+        collect_count=getattr(video, "collect_count", 0) or 0,
         task_id=task_id,
     )
 
@@ -193,7 +195,7 @@ def scan_monitor(monitor_id: int) -> dict[str, Any]:
         start_cursor = cursor if backfill_status == "running" else ""
     else:
         use_mode = "recent"
-        n = 20  # 常态扫头部
+        n = int(monitor.get("backfill_n") or 10)
         start_cursor = ""
 
     try:

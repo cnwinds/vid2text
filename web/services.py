@@ -15,10 +15,11 @@ from douyin_to_text.yt_dlp_fetcher import download_video as ytdlp_download_video
 from douyin_to_text.yt_dlp_fetcher import extract_info
 from web import db
 from web.rate_limit import RateLimitError
+from web.work_cache import get_work_dir
 
 logger = logging.getLogger(__name__)
 
-WORK_DIR = Path(__file__).resolve().parent.parent / "data" / "work"
+WORK_DIR = get_work_dir()
 
 
 def _duration_from_work_cache(row: dict) -> float:

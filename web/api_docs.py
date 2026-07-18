@@ -6,10 +6,18 @@ import json
 from typing import Any
 
 from web.schemas import (
+    DownloadCheckResponse,
+    DownloadUrlResponse,
     ErrorResponse,
+    MonitorListResponse,
+    MonitorResponse,
+    MonitorVideoListResponse,
+    ProgressMetrics,
     RateLimitResponse,
+    SettingsPublicResponse,
     SubtitleListResponse,
     SubtitleResponse,
+    SystemInfoResponse,
 )
 
 # ---- 响应示例（单一数据源） ----
@@ -20,6 +28,10 @@ VIDEO_EXAMPLE = {
     "video_id": "7652629874158406931",
     "title": "示例标题",
     "description": "视频描述",
+    "author_name": "示例作者",
+    "avatar_url": "https://example.com/avatar.jpg",
+    "download_url": "",
+    "duration_sec": 62.5,
 }
 
 VIDEO_EXAMPLE_BRIEF = {
@@ -28,6 +40,10 @@ VIDEO_EXAMPLE_BRIEF = {
     "video_id": "7652629874158406931",
     "title": "",
     "description": "",
+    "author_name": "",
+    "avatar_url": "",
+    "download_url": "",
+    "duration_sec": 0,
 }
 
 
@@ -49,24 +65,49 @@ def subtitle_ready_example(*, task_id: int = 1, cached: bool = False) -> dict[st
     }
 
 
-def subtitle_processing_example(base: str, *, task_id: int = 3) -> dict[str, Any]:
+def subtitle_processing_example(
+    base: str,
+    *,
+    task_id: int = 3,
+    resume: bool = False,
+    partial: bool = False,
+) -> dict[str, Any]:
     poll = f"{base.rstrip('/')}/api/v1/subtitles/{task_id}"
+    processing: dict[str, Any] = {
+        "status": "processing",
+        "step": "stt" if resume else "download",
+        "poll_url": poll,
+        "retry_after": 2.0,
+        "message": "正在提取字幕，请稍后再次请求",
+        "notice": "resume:服务重启中断，将从已完成步骤续跑" if resume else "",
+        "resume_from": "stt" if resume else "",
+    }
+    metrics: dict[str, Any] = {
+        "step": processing["step"],
+        "kind": "cpu" if resume else "network",
+        "detail": "Whisper 转录中…" if resume else "2.1 MB/s · 45%",
+        "activity": 0.42,
+        "duration_sec": 62.5,
+    }
+    if not resume:
+        metrics["network_kbps"] = 2150.0
+    subtitle = None
+    if partial:
+        subtitle = {
+            "text": "已转录的前半段…",
+            "raw": "已转录的前半段…",
+            "corrected": "",
+        }
     return {
         "ready": False,
         "cached": False,
         "id": task_id,
-        "video": VIDEO_EXAMPLE_BRIEF,
-        "subtitle": None,
-        "processing": {
-            "status": "processing",
-            "step": "download",
-            "poll_url": poll,
-            "retry_after": 2.0,
-            "message": "正在提取字幕，请稍后再次请求",
-        },
+        "video": {**VIDEO_EXAMPLE_BRIEF, "duration_sec": 62.5},
+        "subtitle": subtitle,
+        "processing": processing,
         "error": None,
         "retry_url": None,
-        "progress_metrics": {"kind": "network", "detail": "2.1 MB/s · 45%"},
+        "progress_metrics": metrics,
     }
 
 
@@ -112,6 +153,10 @@ def list_example() -> dict[str, Any]:
                     "video_id": "BV1xx",
                     "title": "示例",
                     "description": "",
+                    "author_name": "UP主",
+                    "avatar_url": "",
+                    "download_url": "",
+                    "duration_sec": 180.0,
                 },
                 "subtitle": {"text": "字幕正文", "raw": "原始", "corrected": "修正"},
                 "processing": None,
@@ -262,11 +307,35 @@ curl -s "{b}/api/v1/subtitles/3"
 
 ---
 
+## GET /api/v1/subtitles/by-url
+
+按视频 URL 查询单条记录（**推荐**；无需记住任务 `id`）。
+
+### Query 参数
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `url` | 是 | 视频页面 URL |
+
+```bash
+curl -s "{b}/api/v1/subtitles/by-url?url=https://www.bilibili.com/video/BV1xx411c7mD"
+```
+
+### 返回值
+
+同 [GET /api/v1/subtitles/{{id}}](#get-apiv1subtitlesid)（200 / 202 / 422 / 404）。
+
+#### 400 — URL 无法解析
+
+```json
+{_json_block(error_example("无法解析视频 URL"))}
+```
+
+---
+
 ## GET /api/v1/subtitles
 
-两种模式，由是否传 `url` 区分。
-
-### 模式 A：历史列表（无 `url`）
+分页历史列表（**无** `url` 参数）。
 
 #### Query 参数
 
@@ -275,30 +344,14 @@ curl -s "{b}/api/v1/subtitles/3"
 | `limit` | 20 | 每页 1–100 条 |
 | `offset` | 0 | 偏移；下一页用 `pagination.next_offset` |
 
+> **兼容说明：** 旧版 `GET /subtitles?url=...` 仍可用，请迁移至 `/subtitles/by-url`。
+
 #### 返回值
 
 ##### 200 — 分页列表
 
 ```json
 {_json_block(ex_list)}
-```
-
-### 模式 B：按 URL 查询（有 `url`）
-
-返回**单条** `SubtitleResponse`（不是列表）。
-
-```bash
-curl -s "{b}/api/v1/subtitles?url=https://www.bilibili.com/video/BV1xx411c7mD"
-```
-
-#### 返回值
-
-##### 200 / 202 / 422 — 同 GET /api/v1/subtitles/{{id}}
-
-##### 404 — 该视频尚无记录
-
-```json
-{_json_block(error_example("该视频尚无提取记录，请先 POST /api/v1/subtitles"))}
 ```
 
 ---
@@ -353,6 +406,8 @@ curl -s "{b}/api/v1/subtitles?url=https://www.bilibili.com/video/BV1xx411c7mD"
 
 将**失败**记录重新排队提取。
 
+Query **`fresh=true`** 时清空进度与本地缓存，从头提取。
+
 ### 返回值
 
 #### 202 — 已重新排队
@@ -387,6 +442,51 @@ curl -s "{b}/api/v1/subtitles?url=https://www.bilibili.com/video/BV1xx411c7mD"
 
 ---
 
+## POST /api/v1/subtitles/{{id}}/download-url
+
+解析并返回视频 CDN 直链（非页面 URL）。
+
+#### 200
+
+```json
+{{"download_url": "https://cdn.example.com/video.mp4?token=…"}}
+```
+
+#### 404 / 422 — 任务不存在或解析失败
+
+---
+
+## GET /api/v1/subtitles/{{id}}/download
+
+通过服务端代理下载 MP4（自动携带 Referer / Cookie）。
+
+| Query | 说明 |
+|-------|------|
+| `check=1` | 仅校验是否可下载，返回 `{{"ok": true}}` |
+
+#### 200 — MP4 文件流 或 check 校验 JSON
+
+#### 400 — 任务尚未完成
+
+---
+
+## GET /api/v1/system/info
+
+只读服务端摘要：`work_cache` 配额与占用（不含 Cookie）。
+
+```json
+{{
+  "work_cache": {{
+    "enabled": true,
+    "quota_gb": 1.0,
+    "quota_bytes": 1073741824,
+    "used_bytes": 923417600
+  }}
+}}
+```
+
+---
+
 ## 公共模型 SubtitleResponse
 
 | 字段 | 何时出现 | 说明 |
@@ -394,16 +494,33 @@ curl -s "{b}/api/v1/subtitles?url=https://www.bilibili.com/video/BV1xx411c7mD"
 | `id` | 始终 | 服务端任务编号，用于 `GET /subtitles/{{id}}` |
 | `ready` | 始终 | `true` 表示字幕已就绪 |
 | `cached` | 始终 | 是否直接返回了已有结果 |
-| `video` | 始终 | 视频元信息（url / platform / video_id 等） |
-| `subtitle.text` | `ready: true` | 推荐使用的字幕正文 |
+| `video` | 始终 | 视频元信息（含 `duration_sec`、`author_name` 等） |
+| `subtitle.text` | `ready: true` 或处理中已有部分转录 | 推荐使用的字幕正文 |
 | `processing.poll_url` | 处理中 | 轮询地址，末尾数字即 `id` |
-| `processing.retry_after` | 处理中 | 建议轮询间隔（秒） |
+| `processing.notice` / `resume_from` | 断点续跑 | 中断说明与续跑步骤 |
 | `error` / `retry_url` | 失败 | 失败原因与重试地址 |
-| `progress_metrics` | 处理中 | 资源指标（供 Web 进度展示） |
+| `progress_metrics` | 处理中 | 资源指标（`kind` / `detail` / `activity` 等） |
+
+---
+
+## 管理 API 鉴权（监控 / 设置）
+
+**Web 界面：** 访问 `/monitors`、`/settings` 需先在 `/login` 输入 `.env` 中的 **`ADMIN_PASSWORD`**，登录后浏览器会保存 Session Cookie。
+
+**API / 脚本：** 以下接口还可通过请求头携带 **`ADMIN_API_TOKEN`**（与 UI 密码独立）：
+
+- `Authorization: Bearer <token>`（推荐）
+- 或 `X-Admin-Token: <token>`
+
+未携带或 token 错误 → **401**；服务未配置 `ADMIN_API_TOKEN` 且未登录 → **401/503**。
+
+字幕相关接口（`POST/GET /api/v1/subtitles` 等）**无需**登录或 token。
 
 ---
 
 ## 账号监控
+
+> 本节所有接口均需 Admin Token。
 
 ### POST /api/v1/monitors
 
@@ -415,7 +532,7 @@ curl -s "{b}/api/v1/subtitles?url=https://www.bilibili.com/video/BV1xx411c7mD"
 
 ### GET/PUT /api/v1/settings
 
-配置各平台 Cookie（写入不回显）、Webhook URL/密钥、默认扫描间隔。监控任务完成或失败时，若配置了 `webhook_url` 会 POST JSON 通知。
+配置各平台 Cookie（写入不回显）、Webhook URL/密钥、默认扫描间隔；响应含 **`work_cache`** 配额摘要。监控任务完成或失败时，若配置了 `webhook_url` 会 POST JSON 通知。
 """
 
 
@@ -539,6 +656,7 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
     b = base.rstrip("/")
     sample_url = "https://www.douyin.com/video/7652629874158406931"
     bilibili_url = "https://www.bilibili.com/video/BV1xx411c7mD"
+    auth_hdr = '-H "Authorization: Bearer $ADMIN_API_TOKEN"'
 
     def resp(
         status: int,
@@ -626,6 +744,29 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
             ],
         },
         {
+            "id": "get-subtitles-by-url",
+            "method": "GET",
+            "path": "/api/v1/subtitles/by-url",
+            "summary": "按 URL 查询单条（推荐）",
+            "description": "传 url 查询该视频最新任务，响应同 GET /subtitles/{id}。",
+            "curl": f'curl -i -s "{b}/api/v1/subtitles/by-url?url={bilibili_url}"',
+            "request_query": [
+                {"name": "url", "type": "string", "required": True, "description": "视频页面 URL"},
+            ],
+            "responses": [
+                resp(200, "字幕已就绪", "该视频曾处理完成。", subtitle_ready_example(cached=True)),
+                resp(202, "处理中", "该视频正在提取。", subtitle_processing_example(b)),
+                resp(422, "已失败", "该视频提取失败。", subtitle_failed_example(b)),
+                resp(
+                    404,
+                    "无记录",
+                    "该视频尚无提取记录，需先 POST /api/v1/subtitles。",
+                    error_example("该视频尚无提取记录，请先 POST /api/v1/subtitles"),
+                ),
+                resp(400, "URL 无效", "无法解析视频 URL。", error_example("无法解析视频 URL")),
+            ],
+        },
+        {
             "id": "get-subtitles-id",
             "method": "GET",
             "path": "/api/v1/subtitles/{id}",
@@ -647,36 +788,32 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
             "method": "GET",
             "path": "/api/v1/subtitles",
             "summary": "历史列表（分页）",
-            "description": "无 url 参数时返回分页历史；items 中每条为 SubtitleResponse。",
+            "description": "分页返回历史；items 中每条为 SubtitleResponse。按 URL 查单条请用 GET /subtitles/by-url。",
             "curl": f"curl -i -s '{b}/api/v1/subtitles?limit=20&offset=0'",
             "request_query": [
                 {"name": "limit", "type": "integer", "required": False, "description": "每页 1–100 条，默认 20"},
                 {"name": "offset", "type": "integer", "required": False, "description": "偏移量，默认 0；下一页用 pagination.next_offset"},
+                {"name": "url", "type": "string", "required": False, "description": "[已弃用] 请改用 /subtitles/by-url"},
             ],
             "responses": [
                 resp(200, "分页列表", "返回 items 数组与 pagination 分页信息。", list_example()),
             ],
         },
         {
-            "id": "get-subtitles-url",
+            "id": "get-subtitles-url-legacy",
             "method": "GET",
             "path": "/api/v1/subtitles?url=...",
-            "summary": "按 URL 查询单条",
-            "description": "传 url 时返回单条 SubtitleResponse（不是列表），无需记住 id。",
+            "summary": "按 URL 查询（旧版，已弃用）",
+            "description": "与 GET /subtitles/by-url 相同，保留兼容。",
             "curl": f'curl -i -s "{b}/api/v1/subtitles?url={bilibili_url}"',
             "request_query": [
                 {"name": "url", "type": "string", "required": True, "description": "视频页面 URL"},
             ],
             "responses": [
-                resp(200, "字幕已就绪", "该视频曾处理完成。", subtitle_ready_example(cached=True)),
-                resp(202, "处理中", "该视频正在提取。", subtitle_processing_example(b)),
-                resp(422, "已失败", "该视频提取失败。", subtitle_failed_example(b)),
-                resp(
-                    404,
-                    "无记录",
-                    "该视频尚无提取记录，需先 POST /api/v1/subtitles。",
-                    error_example("该视频尚无提取记录，请先 POST /api/v1/subtitles"),
-                ),
+                resp(200, "字幕已就绪", "同 by-url。", subtitle_ready_example(cached=True)),
+                resp(202, "处理中", "同 by-url。", subtitle_processing_example(b)),
+                resp(422, "已失败", "同 by-url。", subtitle_failed_example(b)),
+                resp(404, "无记录", "同 by-url。", error_example("该视频尚无提取记录，请先 POST /api/v1/subtitles")),
             ],
         },
         {
@@ -720,16 +857,79 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
             "method": "POST",
             "path": "/api/v1/subtitles/{id}/retry",
             "summary": "重新提取",
-            "description": "将 failed 状态的记录重新排队提取。",
-            "curl": f"curl -i -s -X POST {b}/api/v1/subtitles/3/retry",
+            "description": "将 failed 状态的记录重新排队；fresh=true 时清空进度与缓存从头提取。",
+            "curl": f"curl -i -s -X POST '{b}/api/v1/subtitles/3/retry?fresh=false'",
             "request_path": [
                 {"name": "id", "type": "integer", "required": True, "description": "失败任务编号"},
+            ],
+            "request_query": [
+                {"name": "fresh", "type": "boolean", "required": False, "description": "为 true 时清空进度与缓存，从头提取"},
             ],
             "responses": [
                 resp(202, "已重新排队", "响应体同处理中状态，含 id 与 processing.poll_url。", subtitle_processing_example(b)),
                 resp(400, "不可重试", "非 failed 状态。", error_example("仅失败记录可重试")),
                 resp(404, "任务不存在", "该 id 无记录。", error_example("请求不存在")),
                 resp(429, "IP 限流", "当前 IP 已有其他进行中的任务。", rate_limit_example(b)),
+            ],
+        },
+        {
+            "id": "post-download-url",
+            "method": "POST",
+            "path": "/api/v1/subtitles/{id}/download-url",
+            "summary": "获取视频直链",
+            "description": "解析 CDN 直链（非页面 URL），写入任务并返回 download_url。",
+            "curl": f"curl -i -s -X POST {b}/api/v1/subtitles/3/download-url",
+            "request_path": [
+                {"name": "id", "type": "integer", "required": True, "description": "任务编号"},
+            ],
+            "responses": [
+                resp(200, "直链就绪", "返回 DownloadUrlResponse。", {"download_url": "https://cdn.example.com/video.mp4?token=example"}),
+                resp(404, "任务不存在", "该 id 无记录。", error_example("请求不存在")),
+                resp(422, "解析失败", "未能解析直链。", error_example("未能解析视频直链")),
+            ],
+        },
+        {
+            "id": "get-download",
+            "method": "GET",
+            "path": "/api/v1/subtitles/{id}/download",
+            "summary": "下载视频 MP4",
+            "description": "服务端代理下载；check=1 时仅校验可下载性。",
+            "curl": f"curl -i -s -o out.mp4 {b}/api/v1/subtitles/3/download",
+            "request_path": [
+                {"name": "id", "type": "integer", "required": True, "description": "任务编号"},
+            ],
+            "request_query": [
+                {"name": "check", "type": "boolean", "required": False, "description": "为 true 时仅返回 {\"ok\": true}，不传输文件"},
+            ],
+            "responses": [
+                resp(200, "MP4 文件", "Content-Type: video/mp4。", "(binary mp4 stream)", content_type="video/mp4"),
+                resp(200, "校验通过", "check=1 时返回 JSON。", {"ok": True}),
+                resp(400, "未完成", "pending/processing 不可下载。", error_example("任务尚未完成，暂不可下载视频")),
+                resp(404, "不存在", "任务不存在。", error_example("请求不存在")),
+                resp(422, "下载失败", "代理下载出错。", error_example("下载失败")),
+            ],
+        },
+        {
+            "id": "get-system-info",
+            "method": "GET",
+            "path": "/api/v1/system/info",
+            "summary": "服务端运行信息",
+            "description": "只读摘要：work 缓存配额与占用。",
+            "curl": f"curl -s {b}/api/v1/system/info",
+            "responses": [
+                resp(
+                    200,
+                    "运行摘要",
+                    "不含 Cookie / Webhook 密钥。",
+                    {
+                        "work_cache": {
+                            "enabled": True,
+                            "quota_gb": 1.0,
+                            "quota_bytes": 1073741824,
+                            "used_bytes": 923417600,
+                        }
+                    },
+                ),
             ],
         },
         {
@@ -740,6 +940,7 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
             "description": "粘贴作品或主页链接，解析作者并开始监控；可选补采最近 N 条或可见全量。",
             "curl": (
                 f"curl -i -s -X POST {b}/api/v1/monitors "
+                f"{auth_hdr} "
                 f"-H 'Content-Type: application/json' "
                 f"-d '{{\"url\":\"{sample_url}\",\"backfill_mode\":\"recent\",\"backfill_n\":10}}'"
             ),
@@ -773,6 +974,7 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
                     },
                 ),
                 resp(400, "解析失败", "URL 无效或无法解析作者。", error_example("解析作者失败: …")),
+                resp(401, "未授权", "缺少或无效的 Admin Token。", error_example("无效或缺少 Admin API Token")),
             ],
         },
         {
@@ -780,8 +982,102 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
             "method": "GET",
             "path": "/api/v1/monitors",
             "summary": "监控列表",
-            "description": "分页列出已添加的账号监控。",
-            "curl": f"curl -s '{b}/api/v1/monitors?limit=20'",
+            "description": "分页列出已添加的账号监控。需 Admin Token。",
+            "curl": f"curl -s {auth_hdr} '{b}/api/v1/monitors?limit=20'",
+            "request_query": [
+                {"name": "limit", "type": "integer", "required": False, "description": "每页条数"},
+                {"name": "offset", "type": "integer", "required": False, "description": "偏移"},
+            ],
+            "responses": [
+                resp(200, "列表", "items + pagination。", {"items": [], "pagination": {"limit": 20, "offset": 0, "total": 0, "has_more": False, "next_offset": None}}),
+                resp(401, "未授权", "缺少或无效的 Admin Token。", error_example("无效或缺少 Admin API Token")),
+            ],
+        },
+        {
+            "id": "get-monitor",
+            "method": "GET",
+            "path": "/api/v1/monitors/{id}",
+            "summary": "监控详情",
+            "description": "按 id 获取单个账号监控。需 Admin Token。",
+            "curl": f"curl -s {auth_hdr} {b}/api/v1/monitors/1",
+            "request_path": [
+                {"name": "id", "type": "integer", "required": True, "description": "监控 id"},
+            ],
+            "responses": [
+                resp(404, "不存在", "监控不存在。", error_example("监控不存在")),
+            ],
+        },
+        {
+            "id": "patch-monitor",
+            "method": "PATCH",
+            "path": "/api/v1/monitors/{id}",
+            "summary": "更新监控",
+            "description": "修改 enabled、scan_interval_sec、backfill 等字段。",
+            "curl": (
+                f"curl -i -s -X PATCH {b}/api/v1/monitors/1 "
+                f"{auth_hdr} "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"enabled\":false}}'"
+            ),
+            "request_path": [
+                {"name": "id", "type": "integer", "required": True, "description": "监控 id"},
+            ],
+            "request_body": [
+                {"name": "enabled", "type": "boolean", "required": False, "description": "是否启用扫描"},
+                {"name": "scan_interval_sec", "type": "integer", "required": False, "description": "扫描间隔秒"},
+                {"name": "backfill_n", "type": "integer", "required": False, "description": "补采条数"},
+                {"name": "backfill_mode", "type": "string", "required": False, "description": "recent | all"},
+            ],
+            "responses": [
+                resp(200, "已更新", "返回 MonitorResponse。", {"id": 1, "enabled": False}),
+                resp(404, "不存在", "监控不存在。", error_example("监控不存在")),
+            ],
+        },
+        {
+            "id": "delete-monitor",
+            "method": "DELETE",
+            "path": "/api/v1/monitors/{id}",
+            "summary": "删除监控",
+            "description": "删除账号监控（204 无 body）。",
+            "curl": f"curl -i -s -X DELETE {auth_hdr} {b}/api/v1/monitors/1",
+            "request_path": [
+                {"name": "id", "type": "integer", "required": True, "description": "监控 id"},
+            ],
+            "responses": [
+                resp(204, "已删除", "无响应体。", None),
+                resp(404, "不存在", "监控不存在。", error_example("监控不存在")),
+            ],
+        },
+        {
+            "id": "post-monitor-scan",
+            "method": "POST",
+            "path": "/api/v1/monitors/{id}/scan",
+            "summary": "立即扫描",
+            "description": "手动触发一次扫描并入队新视频。",
+            "curl": f"curl -i -s -X POST {auth_hdr} {b}/api/v1/monitors/1/scan",
+            "request_path": [
+                {"name": "id", "type": "integer", "required": True, "description": "监控 id"},
+            ],
+            "responses": [
+                resp(
+                    200,
+                    "扫描完成",
+                    "返回 fetched / enqueued 计数与 monitor。",
+                    {"fetched": 5, "enqueued": 2, "monitor": {"id": 1, "video_count": 12}},
+                ),
+                resp(404, "不存在", "监控不存在。", error_example("监控不存在")),
+            ],
+        },
+        {
+            "id": "get-monitor-videos",
+            "method": "GET",
+            "path": "/api/v1/monitors/{id}/videos",
+            "summary": "监控视频列表",
+            "description": "该作者已发现的作品及关联提取任务状态。",
+            "curl": f"curl -s {auth_hdr} '{b}/api/v1/monitors/1/videos?limit=20'",
+            "request_path": [
+                {"name": "id", "type": "integer", "required": True, "description": "监控 id"},
+            ],
             "request_query": [
                 {"name": "limit", "type": "integer", "required": False, "description": "每页条数"},
                 {"name": "offset", "type": "integer", "required": False, "description": "偏移"},
@@ -795,8 +1091,8 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
             "method": "GET",
             "path": "/api/v1/settings",
             "summary": "读取设置",
-            "description": "Cookie 只返回是否已配置，不回显明文；含 Webhook 与默认扫描间隔。",
-            "curl": f"curl -s {b}/api/v1/settings",
+            "description": "Cookie 只返回是否已配置；含 Webhook、默认扫描间隔与 work_cache 配额摘要。需 Admin Token。",
+            "curl": f"curl -s {auth_hdr} {b}/api/v1/settings",
             "responses": [
                 resp(
                     200,
@@ -809,6 +1105,12 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
                         "webhook_url": "",
                         "webhook_secret_set": False,
                         "default_scan_interval_sec": 2700,
+                        "work_cache": {
+                            "enabled": True,
+                            "quota_gb": 1.0,
+                            "quota_bytes": 1073741824,
+                            "used_bytes": 0,
+                        },
                     },
                 ),
             ],
@@ -821,6 +1123,7 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
             "description": "写入各平台 Cookie、Webhook URL/密钥、默认扫描间隔。传空字符串可清除 Cookie。",
             "curl": (
                 f"curl -i -s -X PUT {b}/api/v1/settings "
+                f"{auth_hdr} "
                 f"-H 'Content-Type: application/json' "
                 f"-d '{{\"webhook_url\":\"https://example.com/hook\",\"default_scan_interval_sec\":3600}}'"
             ),
@@ -845,8 +1148,8 @@ def build_schema_dict(base: str) -> dict[str, Any]:
     endpoints = build_endpoint_specs(b)
     return {
         "name": "vid2text",
-        "version": "1.3.0",
-        "description": "从视频 URL 获取字幕；支持账号监控自动采文案。",
+        "version": "1.5.0",
+        "description": "从视频 URL 获取字幕；监控/设置 API 需 ADMIN_API_TOKEN。",
         "base_url": b,
         "openapi_url": f"{b}/openapi.json",
         "docs_markdown": f"{b}/api/v1/docs.md",
@@ -865,16 +1168,16 @@ def build_schema_dict(base: str) -> dict[str, Any]:
         "models": {
             "SubtitleResponse": SubtitleResponse.model_json_schema(),
             "SubtitleListResponse": SubtitleListResponse.model_json_schema(),
-            "ErrorResponse": {"type": "object", "properties": {"detail": {"type": "string"}}},
-            "RateLimitResponse": {
-                "type": "object",
-                "properties": {
-                    "detail": {"type": "string"},
-                    "code": {"type": "string", "const": "rate_limit_active_task"},
-                    "active_id": {"type": "integer"},
-                    "poll_url": {"type": "string"},
-                },
-            },
+            "ProgressMetrics": ProgressMetrics.model_json_schema(),
+            "DownloadUrlResponse": DownloadUrlResponse.model_json_schema(),
+            "DownloadCheckResponse": DownloadCheckResponse.model_json_schema(),
+            "MonitorResponse": MonitorResponse.model_json_schema(),
+            "MonitorListResponse": MonitorListResponse.model_json_schema(),
+            "MonitorVideoListResponse": MonitorVideoListResponse.model_json_schema(),
+            "SettingsPublicResponse": SettingsPublicResponse.model_json_schema(),
+            "SystemInfoResponse": SystemInfoResponse.model_json_schema(),
+            "ErrorResponse": ErrorResponse.model_json_schema(),
+            "RateLimitResponse": RateLimitResponse.model_json_schema(),
         },
     }
 

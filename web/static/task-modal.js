@@ -1,13 +1,37 @@
-const form = document.getElementById("submit-form");
-const urlInput = document.getElementById("url-input");
-const submitBtn = document.getElementById("submit-btn");
-const statusMsg = document.getElementById("status-msg");
-const taskModal = document.getElementById("task-modal");
-const taskModalBody = document.getElementById("task-modal-body");
-const taskModalFoot = document.getElementById("task-modal-foot");
-const taskModalTitle = document.getElementById("task-modal-title");
-const historyList = document.getElementById("history-list");
-const refreshHistoryBtn = document.getElementById("refresh-history");
+/** 任务详情弹窗（主页 / 监控页共用） */
+(function (global) {
+  const SUBTITLES_API = "/api/v1/subtitles";
+
+  let taskModal = null;
+  let taskModalBody = null;
+  let taskModalFoot = null;
+  let taskModalTitle = null;
+
+  let hooks = {
+    onStatus: () => {},
+    onStatusHide: () => {},
+    onTaskDone: () => {},
+    setSubmitDisabled: () => {},
+  };
+
+  function configure(h) {
+    hooks = { ...hooks, ...h };
+  }
+
+  function showStatus(text) {
+    hooks.onStatus(String(text || ""));
+  }
+
+  function hideStatus() {
+    hooks.onStatusHide();
+  }
+
+  function bindDom() {
+    taskModal = document.getElementById("task-modal");
+    taskModalBody = document.getElementById("task-modal-body");
+    taskModalFoot = document.getElementById("task-modal-foot");
+    taskModalTitle = document.getElementById("task-modal-title");
+  }
 
 let pollTimer = null;
 /** 结果区当前展示的任务 */
@@ -35,7 +59,6 @@ const PIPELINE_STEPS = [
   { key: "correct", label: "文本修正" },
 ];
 
-const STEP_INDEX = Object.fromEntries(PIPELINE_STEPS.map((s, i) => [s.key, i]));
 
 function taskIsActive(status) {
   return status === "pending" || status === "processing";
@@ -213,8 +236,6 @@ const STATUS_LABEL = {
   failed: "失败",
 };
 
-const SUBTITLES_API = "/api/v1/subtitles";
-const HISTORY_DISPLAY_LIMIT = 20;
 
 const RETRY_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.36M21 3v6h-6"/></svg>';
@@ -228,257 +249,6 @@ const ICON_DOWNLOAD =
 const ICON_EXTERNAL =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></svg>';
 
-/* ================= decorative: hero wave（单 canvas，避免几十个 DOM+阴影动画卡死） ================= */
-(function initHeroWave() {
-  const hero = document.getElementById("heroWave");
-  if (!hero) return;
-  hero.replaceChildren();
-  const canvas = document.createElement("canvas");
-  canvas.setAttribute("aria-hidden", "true");
-  hero.appendChild(canvas);
-  const ctx = canvas.getContext("2d", { alpha: true });
-  if (!ctx) return;
-
-  const N = 48;
-  const phases = Float32Array.from({ length: N }, () => Math.random() * Math.PI * 2);
-  const speeds = Float32Array.from({ length: N }, () => 1.1 + Math.random() * 1.4);
-  const bases = Float32Array.from({ length: N }, (_, i) => {
-    const envelope = 0.4 + 0.6 * Math.sin((i / (N - 1)) * Math.PI);
-    return (0.35 + Math.random() * 0.55) * envelope;
-  });
-
-  let w = 0;
-  let h = 0;
-  let raf = 0;
-  let last = 0;
-  const FRAME_MS = 1000 / 30;
-
-  function resize() {
-    const cw = Math.max(1, Math.floor(hero.clientWidth));
-    const ch = Math.max(1, Math.floor(hero.clientHeight || 56));
-    if (cw === w && ch === h) return;
-    w = cw;
-    h = ch;
-    canvas.width = w;
-    canvas.height = h;
-    canvas.style.width = "100%";
-    canvas.style.height = "100%";
-  }
-
-  function paint(now) {
-    raf = 0;
-    if (document.hidden) return;
-    if (now - last < FRAME_MS) {
-      raf = requestAnimationFrame(paint);
-      return;
-    }
-    last = now;
-    resize();
-    ctx.clearRect(0, 0, w, h);
-    const gap = w / N;
-    const barW = Math.max(2, Math.min(4, gap * 0.45));
-    for (let i = 0; i < N; i++) {
-      phases[i] += 0.045 * speeds[i];
-      const wave = 0.28 + 0.72 * (0.5 + 0.5 * Math.sin(phases[i]));
-      const bh = Math.max(4, bases[i] * h * wave);
-      const x = i * gap + (gap - barW) * 0.5;
-      const y = (h - bh) * 0.5;
-      const t = i / (N - 1);
-      let r; let g; let b;
-      if (t < 0.5) {
-        const u = t * 2;
-        r = 70 + (154 - 70) * u;
-        g = 224 + (140 - 224) * u;
-        b = 201 + (255 - 201) * u;
-      } else {
-        const u = (t - 0.5) * 2;
-        r = 154 + (255 - 154) * u;
-        g = 140 + (111 - 140) * u;
-        b = 255 + (168 - 255) * u;
-      }
-      ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},0.72)`;
-      ctx.fillRect(x, y, barW, bh);
-    }
-    raf = requestAnimationFrame(paint);
-  }
-
-  function start() {
-    if (raf || document.hidden) return;
-    last = 0;
-    raf = requestAnimationFrame(paint);
-  }
-
-  function stop() {
-    if (raf) cancelAnimationFrame(raf);
-    raf = 0;
-  }
-
-  resize();
-  start();
-  window.addEventListener("resize", () => {
-    resize();
-    start();
-  });
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) stop();
-    else start();
-  });
-})();
-
-/* ================= decorative: background particles（轻量，限帧，无连线） ================= */
-(function initBgCanvas() {
-  const canvas = document.getElementById("bgCanvas");
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d", { alpha: true });
-  if (!ctx) return;
-  let w = 0;
-  let h = 0;
-  let raf = 0;
-  let last = 0;
-  const FRAME_MS = 1000 / 24;
-  const MAX = 36;
-
-  function resize() {
-    const nw = window.innerWidth;
-    const nh = window.innerHeight;
-    if (nw === w && nh === h) return;
-    w = nw;
-    h = nh;
-    canvas.width = w;
-    canvas.height = h;
-  }
-
-  function spawn() {
-    return {
-      x: Math.random() * Math.max(w, 1),
-      y: Math.random() * Math.max(h, 1),
-      r: 0.7 + Math.random() * 1.4,
-      vy: -(0.04 + Math.random() * 0.1),
-      vx: (Math.random() - 0.5) * 0.03,
-      hue: Math.random() < 0.72 ? 0 : 1,
-      phase: Math.random() * Math.PI * 2,
-      speed: 0.55 + Math.random() * 0.7,
-    };
-  }
-
-  resize();
-  const particles = Array.from({ length: MAX }, spawn);
-
-  function tick(now) {
-    raf = 0;
-    if (document.hidden) return;
-    if (now - last < FRAME_MS) {
-      raf = requestAnimationFrame(tick);
-      return;
-    }
-    const dt = Math.min(2.5, (now - last) / FRAME_MS);
-    last = now;
-    resize();
-    ctx.clearRect(0, 0, w, h);
-    for (let i = 0; i < particles.length; i++) {
-      const p = particles[i];
-      p.phase += 0.012 * p.speed * dt;
-      p.x += (p.vx + Math.sin(p.phase) * 0.02) * dt;
-      p.y += p.vy * dt;
-      if (p.y < -10) {
-        p.x = Math.random() * w;
-        p.y = h + 10;
-        p.r = 0.7 + Math.random() * 1.4;
-        p.vy = -(0.04 + Math.random() * 0.1);
-        p.vx = (Math.random() - 0.5) * 0.03;
-        p.hue = Math.random() < 0.72 ? 0 : 1;
-      }
-      const alpha = 0.1 + 0.12 * Math.sin(p.phase);
-      ctx.beginPath();
-      ctx.fillStyle =
-        p.hue === 0
-          ? `rgba(70,224,201,${alpha})`
-          : `rgba(255,111,168,${alpha * 0.65})`;
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    raf = requestAnimationFrame(tick);
-  }
-
-  function start() {
-    if (raf || document.hidden) return;
-    last = 0;
-    raf = requestAnimationFrame(tick);
-  }
-
-  function stop() {
-    if (raf) cancelAnimationFrame(raf);
-    raf = 0;
-  }
-
-  start();
-  window.addEventListener("resize", resize);
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) stop();
-    else start();
-  });
-})();
-
-function miniBurst(x, y, rgb = "70,224,201") {
-  for (let i = 0; i < 9; i++) {
-    const s = document.createElement("span");
-    s.className = "spark";
-    const angle = Math.random() * Math.PI * 2;
-    const dist = 18 + Math.random() * 26;
-    s.style.setProperty("--dx", Math.cos(angle) * dist + "px");
-    s.style.setProperty("--dy", Math.sin(angle) * dist + "px");
-    s.style.left = x + "px";
-    s.style.top = y + "px";
-    s.style.background = `rgba(${rgb},0.9)`;
-    s.style.boxShadow = `0 0 6px rgba(${rgb},0.8)`;
-    document.body.appendChild(s);
-    setTimeout(() => s.remove(), 650);
-  }
-}
-
-function buildHistWave(el, heights) {
-  el.innerHTML = "";
-  heights.forEach((v) => {
-    const s = document.createElement("span");
-    s.style.height = v + "px";
-    el.appendChild(s);
-  });
-}
-
-function randomWaveHeights() {
-  return Array.from({ length: 5 }, () => 4 + Math.round(Math.random() * 13));
-}
-
-function statusBadgeClass(status) {
-  if (status === "done") return "ok";
-  if (status === "failed") return "fail";
-  if (status === "processing") return "run";
-  return "wait";
-}
-
-function histItemClass(status) {
-  if (status === "done") return "is-ok";
-  if (status === "failed") return "is-fail";
-  if (status === "processing") return "is-run";
-  return "is-wait";
-}
-
-function fieldBoxClass(text, emptyFallback) {
-  const val = (text || "").trim();
-  if (!val || val === emptyFallback) return "field-box empty";
-  return "field-box filled";
-}
-
-function showStatus(text) {
-  if (!statusMsg) return;
-  statusMsg.hidden = false;
-  statusMsg.textContent = text;
-}
-
-function hideStatus() {
-  if (!statusMsg) return;
-  statusMsg.hidden = true;
-}
 
 function escapeHtml(str) {
   return str
@@ -486,13 +256,6 @@ function escapeHtml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-function histStatusClass(status) {
-  if (status === "done") return "hist-done";
-  if (status === "failed") return "hist-fail";
-  if (status === "pending") return "hist-pending";
-  return "hist-processing";
 }
 
 async function copyToClipboard(text, btn) {
@@ -737,8 +500,8 @@ function bindTaskModalActions(task) {
   const retryBtn = document.getElementById("modal-retry-btn");
   if (retryBtn) {
     retryBtn.addEventListener("click", (e) => {
-      miniBurst(e.clientX, e.clientY);
-      handleRetry(task.id);
+      global.miniBurst(e.clientX, e.clientY);
+      handleRetryTask(task.id);
     });
   }
 
@@ -754,7 +517,7 @@ function bindTaskModalActions(task) {
   const dlBtn = document.getElementById("modal-dl-btn");
   if (dlBtn) {
     dlBtn.addEventListener("click", (e) => {
-      miniBurst(e.clientX, e.clientY);
+      global.miniBurst(e.clientX, e.clientY);
       triggerVideoDownload(task.id, dlBtn);
     });
   }
@@ -792,16 +555,6 @@ function closeTaskModal() {
   taskModal.hidden = true;
   taskModal.setAttribute("aria-hidden", "true");
   document.body.classList.remove("m-modal-open");
-}
-
-function initTaskModal() {
-  if (!taskModal) return;
-  taskModal.querySelectorAll("[data-modal-close]").forEach((el) => {
-    el.addEventListener("click", closeTaskModal);
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !taskModal.hidden) closeTaskModal();
-  });
 }
 
 function renderTask(task, animate = false) {
@@ -1038,6 +791,7 @@ function stopPolling() {
   }
   pollingTaskId = null;
 }
+
 
 function scheduleProcAnim(task) {
   if (!task || !taskIsActive(task.status)) return;
@@ -1359,6 +1113,7 @@ function stopProcessingAnim(flash = false) {
   stopProcAnim();
 }
 
+
 function startPolling(taskId) {
   stopPolling();
   pollingTaskId = taskId;
@@ -1393,8 +1148,8 @@ function startPolling(taskId) {
 
       if (task.status === "done") {
         stopPolling();
-        submitBtn.disabled = false;
-        loadHistory();
+        hooks.setSubmitDisabled(false);
+        hooks.onTaskDone();
       if (viewingTaskId === taskId) {
         stopProcessingAnim(true);
         hideStatus();
@@ -1406,8 +1161,8 @@ function startPolling(taskId) {
       } else if (task.status === "failed") {
         stopPolling();
         stopProcessingAnim(false);
-        submitBtn.disabled = false;
-        loadHistory();
+        hooks.setSubmitDisabled(false);
+        hooks.onTaskDone();
         const err = task.error_message || "任务失败，可点击重试";
         if (viewingTaskId === taskId) {
           showStatus(`失败：${err}`);
@@ -1424,7 +1179,7 @@ function startPolling(taskId) {
       }
       stopPolling();
       stopProcessingAnim(false);
-      submitBtn.disabled = false;
+      hooks.setSubmitDisabled(false);
       showStatus(err.message || "轮询失败");
     }
   };
@@ -1433,207 +1188,65 @@ function startPolling(taskId) {
   pollTimer = setInterval(tick, 800);
 }
 
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const url = urlInput.value.trim();
-  if (!url) {
-    urlInput.classList.remove("shake");
-    void urlInput.offsetWidth;
-    urlInput.classList.add("shake");
-    urlInput.focus();
-    return;
+  async function handleRetryTask(taskId) {
+    hooks.setSubmitDisabled(true);
+    showStatus("正在重新排队…");
+    try {
+      const task = await retryTask(taskId);
+      renderTask(task);
+      startPolling(task.id);
+    } catch (err) {
+      showStatus(err.message);
+      hooks.setSubmitDisabled(false);
+    }
   }
 
-  submitBtn.disabled = true;
-  showStatus("提交中…");
-
-  try {
-    const res = await fetch(SUBTITLES_API, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
+  function initTaskModalOnce() {
+    bindDom();
+    if (!taskModal || taskModal.dataset.bound) return;
+    taskModal.dataset.bound = "1";
+    taskModal.querySelectorAll("[data-modal-close]").forEach((el) => {
+      el.addEventListener("click", closeTaskModal);
     });
-    const { data, status } = await parseJsonResponse(res);
-    if (status === 400) throw new Error(data.detail || "提交失败");
-    if (status === 429) {
-      const msg = data.detail || "当前已有进行中的提取任务，请等待完成";
-      if (data.active_id) {
-        showStatus(`${msg}（#${data.active_id}）`);
-        startPolling(data.active_id);
-      } else {
-        showStatus(msg);
-      }
-      submitBtn.disabled = false;
-      return;
-    }
-
-    const task = subtitleToView(data);
-    const cached = data.cached;
-    renderTask(task);
-
-    if (task.status === "done") {
-      showStatus(cached ? "命中缓存，直接返回已有结果" : "已完成");
-      submitBtn.disabled = false;
-      renderTask(task, true);
-      loadHistory();
-      urlInput.value = "";
-    } else if (task.status === "failed") {
-      showStatus(task.error_message ? `失败：${task.error_message}` : "任务失败，可点击重试");
-      submitBtn.disabled = false;
-    } else {
-      startPolling(task.id);
-    }
-  } catch (err) {
-    showStatus(err.message);
-    submitBtn.disabled = false;
-  }
-});
-
-async function openHistoryDetail(taskId, ev) {
-  if (ev) {
-    ev.stopPropagation();
-    miniBurst(ev.clientX, ev.clientY);
-  }
-  try {
-    const task = await fetchTask(taskId);
-    viewingTaskId = task.id;
-    currentTaskId = task.id;
-    openTaskModal(task, true);
-    if (task.status === "pending" || task.status === "processing") {
-      startPolling(task.id);
-    }
-  } catch (err) {
-    showStatus(err.message || "加载失败");
-  }
-}
-
-function createHistoryBlock(view) {
-  const plat = platformClass(view.platform);
-  const block = document.createElement("article");
-  block.className = `m-card hist-card ${histStatusClass(view.status)} ${plat}`;
-  block.dataset.taskId = view.id;
-
-  const titleText = historyTitleLabel(view);
-  const shortTitle =
-    titleText.length > 72 ? `${escapeHtml(titleText.slice(0, 72))}…` : escapeHtml(titleText);
-  const author = historyAuthorLabel(view);
-  const authorHtml = author
-    ? author.length > 28
-      ? `${escapeHtml(author.slice(0, 28))}…`
-      : escapeHtml(author)
-    : `<span class="hist-card-author-muted">未知播主</span>`;
-
-  const transcriptText = historyTranscriptText(view);
-  const actionBtns = [];
-  if (hasHistoryTranscript(view)) {
-    actionBtns.push(histActionBtn("primary", "复制口播文稿", ICON_COPY));
-  }
-  if (canDownloadVideo(view.status)) {
-    actionBtns.push(histActionBtn("ghost", "下载视频", ICON_DOWNLOAD));
-  }
-  const actionsHtml = actionBtns.length
-    ? `<div class="hist-card-actions">${actionBtns.join("")}</div>`
-    : "";
-
-  const durationLabel = taskDurationLabel(view);
-  const durationHtml = durationLabel
-    ? `<span class="hist-card-duration">${escapeHtml(durationLabel)}</span>`
-    : "";
-
-  block.innerHTML = `
-    <div class="m-card-shell hist-card-shell">
-      <div class="hist-card-top">
-        ${renderPlatformAvatarCol(view.platform, historyAvatarInner(view))}
-        <div class="hist-card-main">
-          <strong class="m-card-name hist-card-title">${shortTitle}</strong>
-          <div class="hist-card-meta">
-            <span class="hist-card-author">${authorHtml}</span>
-            ${durationHtml}
-            <span class="hist-card-task-id">#${escapeHtml(String(view.id))}</span>
-          </div>
-        </div>
-        ${actionsHtml}
-      </div>
-    </div>`;
-
-  block.addEventListener("click", (e) => openHistoryDetail(view.id, e));
-
-  block.querySelector(".hist-act-primary")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    copyToClipboard(transcriptText, e.currentTarget);
-  });
-
-  block.querySelector(".hist-act-ghost")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    triggerVideoDownload(view.id, e.currentTarget);
-  });
-
-  const avImg = block.querySelector(".m-avatar-img");
-  if (avImg) {
-    avImg.addEventListener("error", () => {
-      avImg.remove();
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && taskModal && !taskModal.hidden) closeTaskModal();
     });
   }
 
-  return block;
-}
-
-async function loadHistory() {
-  try {
-    const res = await fetch(`${SUBTITLES_API}?limit=${HISTORY_DISPLAY_LIMIT}`);
-    const { data, status } = await parseJsonResponse(res);
-    if (status !== 200) {
-      historyList.innerHTML = '<div class="m-empty"><p>加载失败</p></div>';
-      return;
+  async function openById(taskId, ev) {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (typeof global.miniBurst === "function") global.miniBurst(ev.clientX, ev.clientY);
     }
-    historyList.innerHTML = "";
-
-    if (!data.items?.length) {
-      historyList.innerHTML = `
-        <div class="m-empty m-empty-lg">
-          <div class="m-empty-icon" aria-hidden="true">◌</div>
-          <p>暂无记录</p>
-          <span>提交视频链接后，提取结果会出现在这里</span>
-        </div>`;
-      return;
+    initTaskModalOnce();
+    bindDom();
+    try {
+      const task = await fetchTask(taskId);
+      viewingTaskId = task.id;
+      currentTaskId = task.id;
+      openTaskModal(task, true);
+      if (taskIsActive(task.status)) startPolling(task.id);
+    } catch (err) {
+      showStatus(err.message || "加载失败");
     }
-
-    for (const item of data.items) {
-      historyList.appendChild(createHistoryBlock(subtitleToView(item)));
-    }
-  } catch {
-    historyList.innerHTML = '<div class="m-empty"><p>加载失败</p></div>';
   }
-}
 
-async function handleRetry(taskId) {
-  submitBtn.disabled = true;
-  showStatus("正在重新排队…");
-  try {
-    const task = await retryTask(taskId);
-    renderTask(task);
-    startPolling(task.id);
-  } catch (err) {
-    showStatus(err.message);
-    submitBtn.disabled = false;
-  }
-}
-
-refreshHistoryBtn.addEventListener("click", (e) => {
-  miniBurst(e.clientX, e.clientY);
-  historyList.querySelectorAll(".hist-card").forEach((el, i) => {
-    el.style.transition = "opacity .25s ease";
-    el.style.opacity = "0.35";
-    setTimeout(() => {
-      el.style.opacity = "1";
-    }, 120 + i * 40);
-  });
-  loadHistory();
-});
-
-submitBtn.addEventListener("click", (e) => {
-  if (!submitBtn.disabled) miniBurst(e.clientX, e.clientY);
-});
-
-initTaskModal();
-loadHistory();
+  global.Vid2TaskModal = {
+    configure,
+    init: initTaskModalOnce,
+    openById,
+    openWithTask: (task, animate = false) => {
+      initTaskModalOnce();
+      bindDom();
+      openTaskModal(task, animate);
+    },
+    close: closeTaskModal,
+    fetchTask,
+    subtitleToView,
+    startPolling,
+    stopPolling,
+    renderTask,
+    taskIsActive,
+  };
+})(window);

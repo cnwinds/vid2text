@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 
 from web import db
 from web.api_docs import (
+    ERROR_RESPONSES,
     GET_LIST_RESPONSES,
     GET_SUBTITLE_RESPONSES,
     POST_SUBTITLE_RESPONSES,
@@ -20,6 +21,7 @@ from web.api_docs import (
     build_schema_dict,
 )
 from web.schemas import (
+    DownloadCheckResponse,
     DownloadUrlResponse,
     PaginationMeta,
     ProcessingInfo,
@@ -28,7 +30,9 @@ from web.schemas import (
     SubtitleListResponse,
     SubtitleRequest,
     SubtitleResponse,
+    SystemInfoResponse,
     VideoRef,
+    WorkCachePublic,
 )
 from web.services import (
     check_ip_rate_limit,
@@ -42,6 +46,7 @@ from web.services import (
     subtitle_http_status,
 )
 from web.rate_limit import RateLimitError, get_client_ip
+from web.work_cache import work_cache_public, clear_video_cache
 
 router = APIRouter(prefix="/api/v1", tags=["v1"])
 
@@ -86,6 +91,21 @@ def _build_pagination(limit: int, offset: int, total: int) -> PaginationMeta:
         has_more=has_more,
         next_offset=end if has_more else None,
     )
+
+
+def _lookup_subtitle_by_url(url: str, request: Request) -> Response:
+    try:
+        row = find_by_url(url)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="该视频尚无提取记录，请先 POST /api/v1/subtitles",
+        )
+    enrich_task_duration(row, persist=True)
+    cached = row["status"] == "done"
+    return _subtitle_response(row, request, cached=cached)
 
 
 async def _wait_until_done(
@@ -151,6 +171,25 @@ async def obtain_subtitles(body: SubtitleRequest, request: Request) -> Response:
 
 
 @router.get(
+    "/subtitles/by-url",
+    summary="按视频 URL 查询单条",
+    description=(
+        "推荐用法：传 `url` 查询该视频最新任务，响应同 GET /subtitles/{id}。\n\n"
+        "**响应说明：**\n"
+        "- `200` / `202` / `422` — 同 GET /subtitles/{id}\n"
+        "- `404` — 该视频尚无记录"
+    ),
+    response_model=SubtitleResponse,
+    responses={**GET_SUBTITLE_RESPONSES, 400: ERROR_RESPONSES[400]},
+)
+async def get_subtitles_by_url(
+    request: Request,
+    url: str = Query(..., min_length=1, description="视频页面 URL"),
+) -> Response:
+    return _lookup_subtitle_by_url(url, request)
+
+
+@router.get(
     "/subtitles/{req_id}",
     summary="继续获取字幕",
     description=(
@@ -174,39 +213,35 @@ async def get_subtitles(req_id: int, request: Request) -> Response:
 
 @router.get(
     "/subtitles",
-    summary="历史列表（分页）或按 URL 查询",
+    summary="历史列表（分页）",
     description=(
-        "两种模式（由是否传 `url` 区分）：\n\n"
-        "1. **历史列表**（无 `url`）：分页返回 `items` + `pagination`\n"
-        "   - `limit` 每页条数，默认 20，最大 100\n"
-        "   - `offset` 偏移量，默认 0；下一页用 `pagination.next_offset`\n"
-        "   - `pagination.total` 为总记录数\n\n"
-        "2. **按 URL 查询**（有 `url`）：返回单条字幕对象，**不是**列表\n"
-        "   - 响应同 GET /subtitles/{id}（200/202/422）\n"
-        "   - `404` 表示该视频尚无记录"
+        "分页返回历史提取记录。\n\n"
+        "- `limit` 每页条数，默认 20，最大 100\n"
+        "- `offset` 偏移量，默认 0；下一页用 `pagination.next_offset`\n"
+        "- `pagination.total` 为总记录数\n\n"
+        "按 URL 查单条请用 **GET /subtitles/by-url?url=...**（"
+        "旧版 `?url=` 仍兼容，将在后续版本移除）。"
     ),
-    response_model=None,
+    response_model=SubtitleListResponse,
     responses=GET_LIST_RESPONSES,
 )
-async def list_or_lookup_subtitles(
+async def list_subtitles(
     request: Request,
-    url: str | None = Query(None, description="若提供则按视频 URL 查询单条，忽略分页参数"),
-    limit: int = Query(20, ge=1, le=100, description="每页条数（仅列表模式）"),
-    offset: int = Query(0, ge=0, description="偏移量（仅列表模式）"),
+    url: str | None = Query(
+        None,
+        description="[已弃用] 请改用 GET /subtitles/by-url；若提供则按 URL 查询单条",
+        deprecated=True,
+    ),
+    limit: int = Query(20, ge=1, le=100, description="每页条数"),
+    offset: int = Query(0, ge=0, description="偏移量"),
 ) -> SubtitleListResponse | Response:
     if url:
-        row = find_by_url(url)
-        if not row:
-            raise HTTPException(
-                status_code=404,
-                detail="该视频尚无提取记录，请先 POST /api/v1/subtitles",
-            )
-        enrich_task_duration(row, persist=True)
-        cached = row["status"] == "done"
-        return _subtitle_response(row, request, cached=cached)
+        return _lookup_subtitle_by_url(url, request)
 
     total = db.count_tasks()
     rows = db.list_history(limit=limit, offset=offset)
+    for row in rows:
+        enrich_task_duration(row, persist=False)
     items = [_as_subtitle_model(r, request) for r in rows]
     return SubtitleListResponse(
         items=items,
@@ -308,7 +343,7 @@ async def download_subtitle_video(
     if row["status"] not in ("done", "failed"):
         raise HTTPException(status_code=400, detail="任务尚未完成，暂不可下载视频")
     if check:
-        return JSONResponse(content={"ok": True})
+        return DownloadCheckResponse(ok=True)
 
     try:
         path, filename = await asyncio.to_thread(prepare_video_file, req_id)
@@ -329,6 +364,7 @@ async def download_subtitle_video(
     summary="重新提取字幕",
     description=(
         "将失败记录重新排队。\n\n"
+        "Query **`fresh=true`** 时清空进度与本地缓存元数据，从头提取。\n\n"
         "**响应说明：**\n"
         "- `202` — 已重新排队，轮询 poll_url\n"
         "- `400` — 非失败状态，不可重试\n"
@@ -356,10 +392,22 @@ async def retry_subtitles(
         payload = rate_limit_payload(exc.active_task, _base_url(request))
         return JSONResponse(status_code=429, content=payload)
 
+    if fresh:
+        clear_video_cache(existing.get("video_id") or "")
     row = db.retry_task(req_id, fresh=fresh)
     if not row:
         raise HTTPException(status_code=400, detail="重试失败")
     return _subtitle_response(row, request)
+
+
+@router.get(
+    "/system/info",
+    summary="服务端运行信息",
+    description="只读摘要：work 缓存配额与占用等（不含 Cookie / Webhook 密钥）。",
+    response_model=SystemInfoResponse,
+)
+async def system_info() -> SystemInfoResponse:
+    return SystemInfoResponse(work_cache=WorkCachePublic(**work_cache_public()))
 
 
 @router.get("/docs.md", summary="API 说明（Markdown）")

@@ -97,6 +97,14 @@ def init_db() -> None:
                 conn.execute(
                     "ALTER TABLE monitor_videos ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0"
                 )
+            if "share_count" not in mv_cols:
+                conn.execute(
+                    "ALTER TABLE monitor_videos ADD COLUMN share_count INTEGER NOT NULL DEFAULT 0"
+                )
+            if "collect_count" not in mv_cols:
+                conn.execute(
+                    "ALTER TABLE monitor_videos ADD COLUMN collect_count INTEGER NOT NULL DEFAULT 0"
+                )
 
         conn.execute(
             """
@@ -142,6 +150,8 @@ def init_db() -> None:
                 like_count INTEGER NOT NULL DEFAULT 0,
                 comment_count INTEGER NOT NULL DEFAULT 0,
                 play_count INTEGER NOT NULL DEFAULT 0,
+                share_count INTEGER NOT NULL DEFAULT 0,
+                collect_count INTEGER NOT NULL DEFAULT 0,
                 task_id INTEGER,
                 discovered_at TEXT NOT NULL,
                 UNIQUE(platform, video_id)
@@ -627,6 +637,8 @@ def upsert_monitor_video(
     like_count: int = 0,
     comment_count: int = 0,
     play_count: int = 0,
+    share_count: int = 0,
+    collect_count: int = 0,
     task_id: int | None = None,
 ) -> dict[str, Any]:
     now = _utc_now()
@@ -646,6 +658,8 @@ def upsert_monitor_video(
             fields["like_count"] = int(like_count or 0)
             fields["comment_count"] = int(comment_count or 0)
             fields["play_count"] = int(play_count or 0)
+            fields["share_count"] = int(share_count or 0)
+            fields["collect_count"] = int(collect_count or 0)
             if task_id is not None:
                 fields["task_id"] = task_id
             if fields:
@@ -663,9 +677,9 @@ def upsert_monitor_video(
             """
             INSERT INTO monitor_videos (
                 monitor_id, platform, video_id, video_url, title, published_at,
-                like_count, comment_count, play_count,
+                like_count, comment_count, play_count, share_count, collect_count,
                 task_id, discovered_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 monitor_id,
@@ -677,6 +691,8 @@ def upsert_monitor_video(
                 like_count,
                 comment_count,
                 play_count,
+                share_count,
+                collect_count,
                 task_id,
                 now,
             ),

@@ -21,11 +21,11 @@ MAX_PAGE_SIZE = 30
 MAX_VIDEOS_PER_SCAN = 200
 
 
-def _stats_from_bili_item(item: dict[str, Any]) -> tuple[int, int, int]:
+def _stats_from_bili_item(item: dict[str, Any]) -> tuple[int, int, int, int, int]:
     play = int(item.get("play") or item.get("view") or 0)
     comment = int(item.get("comment") or item.get("review") or 0)
     like = int(item.get("like") or item.get("favorites") or item.get("favorite") or 0)
-    return like, comment, play
+    return like, comment, play, 0, 0
 
 
 def _pick_douyin_avatar(user: dict[str, Any]) -> str:
@@ -40,19 +40,21 @@ def _pick_douyin_avatar(user: dict[str, Any]) -> str:
     return ""
 
 
-def _stats_from_aweme(aweme: dict[str, Any]) -> tuple[int, int, int]:
+def _stats_from_aweme(aweme: dict[str, Any]) -> tuple[int, int, int, int, int]:
     stat = aweme.get("statistics") or {}
     like = int(stat.get("digg_count") or stat.get("admire_count") or 0)
     comment = int(stat.get("comment_count") or 0)
     play = int(stat.get("play_count") or stat.get("view_count") or 0)
-    return like, comment, play
+    share = int(stat.get("share_count") or stat.get("forward_count") or 0)
+    collect = int(stat.get("collect_count") or 0)
+    return like, comment, play, share, collect
 
 
-def _stats_from_yt_ent(ent: dict[str, Any]) -> tuple[int, int, int]:
+def _stats_from_yt_ent(ent: dict[str, Any]) -> tuple[int, int, int, int, int]:
     like = int(ent.get("like_count") or 0)
     comment = int(ent.get("comment_count") or 0)
     play = int(ent.get("view_count") or 0)
-    return like, comment, play
+    return like, comment, play, 0, 0
 
 _BILI_HEADERS = {
     "User-Agent": (
@@ -290,7 +292,7 @@ def _feed_bilibili(
                     pub = datetime.fromtimestamp(int(created), tz=timezone.utc).isoformat()
                 except Exception:
                     pub = str(created)
-            like, comment, play = _stats_from_bili_item(item)
+            like, comment, play, share, collect = _stats_from_bili_item(item)
             videos.append(
                 FeedVideo(
                     video_id=bvid,
@@ -300,6 +302,8 @@ def _feed_bilibili(
                     like_count=like,
                     comment_count=comment,
                     play_count=play,
+                    share_count=share,
+                    collect_count=collect,
                 )
             )
         count_info = (data.get("data") or {}).get("page") or {}
@@ -369,7 +373,7 @@ def _feed_bilibili_ytdlp(
         vurl = str(ent.get("url") or ent.get("webpage_url") or "")
         if not vurl.startswith("http"):
             vurl = f"https://www.bilibili.com/video/{bvid}"
-        like, comment, play = _stats_from_yt_ent(ent)
+        like, comment, play, share, collect = _stats_from_yt_ent(ent)
         videos.append(
             FeedVideo(
                 video_id=bvid,
@@ -378,6 +382,8 @@ def _feed_bilibili_ytdlp(
                 like_count=like,
                 comment_count=comment,
                 play_count=play,
+                share_count=share,
+                collect_count=collect,
             )
         )
 
@@ -455,7 +461,7 @@ def _feed_youtube(
                 pub = datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
             except Exception:
                 pub = str(ts)
-        like, comment, play = _stats_from_yt_ent(ent)
+        like, comment, play, share, collect = _stats_from_yt_ent(ent)
         videos.append(
             FeedVideo(
                 video_id=vid,
@@ -465,6 +471,8 @@ def _feed_youtube(
                 like_count=like,
                 comment_count=comment,
                 play_count=play,
+                share_count=share,
+                collect_count=collect,
             )
         )
 
@@ -497,7 +505,7 @@ def _awemes_to_videos(aweme_list: list[dict[str, Any]], *, limit: int) -> list[F
                 pub = datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat()
             except Exception:
                 pub = str(create_time)
-        like, comment, play = _stats_from_aweme(aweme)
+        like, comment, play, share, collect = _stats_from_aweme(aweme)
         videos.append(
             FeedVideo(
                 video_id=aid,
@@ -507,6 +515,8 @@ def _awemes_to_videos(aweme_list: list[dict[str, Any]], *, limit: int) -> list[F
                 like_count=like,
                 comment_count=comment,
                 play_count=play,
+                share_count=share,
+                collect_count=collect,
             )
         )
         if len(videos) >= limit:

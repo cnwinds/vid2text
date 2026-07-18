@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
+from web.auth import require_admin_auth
 from web import db
 from web.monitor_service import (
     create_monitor_from_url,
@@ -22,9 +23,15 @@ from web.schemas import (
     ScanResultResponse,
     SettingsPublicResponse,
     SettingsUpdateRequest,
+    WorkCachePublic,
 )
+from web.work_cache import work_cache_public
 
-router = APIRouter(prefix="/api/v1", tags=["monitors"])
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["monitors"],
+    dependencies=[Depends(require_admin_auth)],
+)
 
 
 def _pagination(limit: int, offset: int, total: int) -> PaginationMeta:
@@ -140,6 +147,8 @@ def list_videos(
             like_count=int(r.get("like_count") or 0),
             comment_count=int(r.get("comment_count") or 0),
             play_count=int(r.get("play_count") or 0),
+            share_count=int(r.get("share_count") or 0),
+            collect_count=int(r.get("collect_count") or 0),
             task_id=r.get("task_id"),
             task_status=r.get("task_status"),
             task_error=r.get("task_error"),
@@ -165,6 +174,7 @@ def _settings_public() -> SettingsPublicResponse:
         webhook_url=db.get_setting("webhook_url", ""),
         webhook_secret_set=bool(db.get_setting("webhook_secret", "").strip()),
         default_scan_interval_sec=interval,
+        work_cache=WorkCachePublic(**work_cache_public()),
     )
 
 

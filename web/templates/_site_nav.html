@@ -1,0 +1,11 @@
+<nav class="header-nav">
+  <a href="/" class="{% if request.url.path == '/' %}is-active{% endif %}">提取</a>
+  <a href="/monitors" class="{% if request.url.path == '/monitors' %}is-active{% endif %}">监控</a>
+  <a href="/settings" class="{% if request.url.path == '/settings' %}is-active{% endif %}">设置</a>
+  <a href="/api-docs" class="{% if request.url.path == '/api-docs' %}is-active{% endif %}">API</a>
+  {% if request.url.path in ['/monitors', '/settings'] %}
+  <form method="post" action="/logout" class="nav-logout-form">
+    <button type="submit" class="nav-logout-btn">退出</button>
+  </form>
+  {% endif %}
+</nav>
