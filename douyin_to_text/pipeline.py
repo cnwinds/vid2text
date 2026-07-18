@@ -326,7 +326,7 @@ def _run_ytdlp(
         emit_progress(prog, "fetch_meta", network_wait_metrics(detail="获取视频信息…"), tel)
         meta = run_monitored(
             lambda m: emit_progress(prog, "fetch_meta", m, tel),
-            lambda: extract_info(url),
+            lambda: extract_info(url, cookies=cookies),
             kind="network",
             detail="获取视频信息…",
         )
@@ -354,7 +354,7 @@ def _run_ytdlp(
         _skip_stt_steps(prog, tel)
     else:
         if meta is None:
-            meta = extract_info(url)
+            meta = extract_info(url, cookies=cookies)
         emit_progress(prog, "fetch_subtitle", network_wait_metrics(detail="获取平台字幕…"), tel)
         sub = run_monitored(
             lambda m: emit_progress(prog, "fetch_subtitle", m, tel),

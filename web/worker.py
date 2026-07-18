@@ -25,6 +25,30 @@ WHISPER_MODEL = default_model()
 POLL_INTERVAL_SEC = 2.0
 
 
+def _cookies_path_for_task(task: dict) -> Path | None:
+    """优先使用设置里的平台 Cookie，否则回退环境 COOKIES_PATH。"""
+    platform = (task.get("platform") or "").lower()
+    key = {
+        "douyin": "douyin_cookies",
+        "bilibili": "bilibili_cookies",
+        "youtube": "youtube_cookies",
+    }.get(platform)
+    if key:
+        raw = (db.get_setting(key, "") or "").strip()
+        if raw:
+            from douyin_to_text.author_feed import write_cookiefile
+
+            domain = {
+                "douyin": ".douyin.com",
+                "bilibili": ".bilibili.com",
+                "youtube": ".youtube.com",
+            }.get(platform, ".youtube.com")
+            path = write_cookiefile(raw, domain=domain)
+            if path:
+                return path
+    return COOKIES_PATH
+
+
 def _process_task(task: dict) -> None:
     task_id = task["id"]
     url = task["video_url"]
@@ -34,9 +58,11 @@ def _process_task(task: dict) -> None:
         url,
         task.get("progress_step") or "start",
     )
+    cookie_path = _cookies_path_for_task(task)
+    tmp_cookie = cookie_path is not None and cookie_path != COOKIES_PATH
     opts = PipelineOptions(
         work_dir=WORK_DIR,
-        cookies=COOKIES_PATH,
+        cookies=cookie_path,
         stt_engine=STT_ENGINE,
         whisper_model=WHISPER_MODEL,
         headless=True,
@@ -55,16 +81,20 @@ def _process_task(task: dict) -> None:
         existing_corrected = (task.get("corrected_transcript") or "").strip()
         existing_raw = (task.get("raw_transcript") or "").strip()
         if existing_corrected:
-            db.update_task(
+            updated = db.update_task(
                 task_id,
                 status="done",
                 progress_step="correct",
                 progress_metrics='{"step":"correct","kind":"idle","activity":1,"detail":"完成"}',
             )
             logger.info("任务 #%s 已有结果，跳过重跑", task_id)
+            if updated:
+                from web.webhook import dispatch_task_webhook
+
+                dispatch_task_webhook(updated)
             return
         result = run_pipeline(url, opts, on_progress=reporter)
-        db.update_task(
+        updated = db.update_task(
             task_id,
             status="done",
             progress_step="correct",
@@ -76,9 +106,23 @@ def _process_task(task: dict) -> None:
             video_url=result.video_url,
         )
         logger.info("任务 #%s 完成", task_id)
+        if updated:
+            from web.webhook import dispatch_task_webhook
+
+            dispatch_task_webhook(updated)
     except Exception as exc:
         logger.exception("任务 #%s 失败", task_id)
-        db.update_task(task_id, status="failed", error_message=str(exc))
+        updated = db.update_task(task_id, status="failed", error_message=str(exc))
+        if updated:
+            from web.webhook import dispatch_task_webhook
+
+            dispatch_task_webhook(updated)
+    finally:
+        if tmp_cookie and cookie_path:
+            try:
+                cookie_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _worker_loop() -> None:

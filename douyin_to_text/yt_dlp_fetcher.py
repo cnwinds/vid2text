@@ -27,6 +27,34 @@ PREFERRED_SUB_LANGS = [
     "ja",
 ]
 
+_BILI_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.bilibili.com/",
+}
+
+
+def _ytdlp_base_opts(
+    url: str,
+    *,
+    cookies: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+    }
+    if "bilibili.com" in url or "b23.tv" in url:
+        opts["http_headers"] = dict(_BILI_HEADERS)
+    if cookies:
+        opts["cookiefile"] = cookies
+    if extra:
+        opts.update(extra)
+    return opts
+
 
 @dataclass
 class YtDlpMetadata:
@@ -46,9 +74,18 @@ class SubtitleResult:
     source: str  # manual | auto | bilibili-api
 
 
-def extract_info(url: str) -> YtDlpMetadata:
-    ydl = yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True})
-    info = ydl.extract_info(url, download=False)
+def extract_info(url: str, cookies: str | None = None) -> YtDlpMetadata:
+    opts = _ytdlp_base_opts(url, cookies=cookies, extra={"skip_download": True})
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as exc:
+        msg = str(exc)
+        if "412" in msg and ("bilibili.com" in url or "b23.tv" in url):
+            raise RuntimeError(
+                "B 站返回 412（需登录态）。请到设置页配置「B站 Cookie」后重试。"
+            ) from exc
+        raise
     return YtDlpMetadata(
         video_id=str(info.get("id") or ""),
         title=info.get("title") or "",
@@ -87,19 +124,18 @@ def _download_subtitle_via_ytdlp(
     if not langs:
         return None
 
-    opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "noprogress": True,
-        "skip_download": True,
-        "writesubtitles": bool(manual_langs),
-        "writeautomaticsub": bool(auto_langs),
-        "subtitleslangs": langs[:4],
-        "subtitlesformat": "vtt/srt/best",
-        "outtmpl": outtmpl,
-    }
-    if cookies:
-        opts["cookiefile"] = cookies
+    opts = _ytdlp_base_opts(
+        url,
+        cookies=cookies,
+        extra={
+            "skip_download": True,
+            "writesubtitles": bool(manual_langs),
+            "writeautomaticsub": bool(auto_langs),
+            "subtitleslangs": langs[:4],
+            "subtitlesformat": "vtt/srt/best",
+            "outtmpl": outtmpl,
+        },
+    )
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
@@ -210,22 +246,21 @@ def download_audio(
     """Download best audio and convert to 16kHz mono WAV."""
     work_dir.mkdir(parents=True, exist_ok=True)
     outtmpl = str(work_dir / "%(id)s.%(ext)s")
-    opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "noprogress": True,
-        "format": "bestaudio/best",
-        "outtmpl": outtmpl,
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "wav",
-                "preferredquality": "192",
-            }
-        ],
-    }
-    if cookies:
-        opts["cookiefile"] = cookies
+    opts = _ytdlp_base_opts(
+        url,
+        cookies=cookies,
+        extra={
+            "format": "bestaudio/best",
+            "outtmpl": outtmpl,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "wav",
+                    "preferredquality": "192",
+                }
+            ],
+        },
+    )
 
     last_report = 0.0
 
@@ -245,9 +280,17 @@ def download_audio(
     if on_download_progress:
         opts["progress_hooks"] = [hook]
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        vid = info.get("id") or "audio"
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            vid = info.get("id") or "audio"
+    except Exception as exc:
+        msg = str(exc)
+        if "412" in msg and ("bilibili.com" in url or "b23.tv" in url):
+            raise RuntimeError(
+                "B 站返回 412（需登录态）。请到设置页配置「B站 Cookie」后重试。"
+            ) from exc
+        raise
 
     wav = work_dir / f"{vid}.wav"
     if wav.exists():

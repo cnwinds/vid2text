@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>vid2text — 设置</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <canvas id="bgCanvas" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <header class="subpage-header">
+      <p class="back-link"><a href="/">← 返回主页</a></p>
+      <div class="eyebrow"><span class="dot"></span>SETTINGS</div>
+      <h1 class="subpage-title">设置</h1>
+      <p class="sub">平台 Cookie · Webhook · 默认扫描间隔</p>
+      <nav class="header-nav">
+        <a href="/">提取</a>
+        <a href="/monitors">监控</a>
+        <a href="/settings">设置</a>
+        <a href="/api-docs">API</a>
+      </nav>
+    </header>
+
+    <section class="panel">
+      <form id="settings-form">
+        <p class="section-label">平台 Cookie</p>
+        <p class="hint-text">从浏览器导出 Cookie 粘贴到下方。页面只显示是否已配置，不会回显明文。<br>
+抖音用于扫主页作品；<strong>B 站提取字幕/音轨通常也需要 Cookie</strong>（否则易 412）。在已登录的 bilibili.com 下复制整段 Cookie。</p>
+
+        <label class="field-label" for="douyin-cookies">抖音 Cookie <span id="douyin-flag" class="cookie-flag"></span></label>
+        <textarea id="douyin-cookies" class="settings-area" rows="3" placeholder="粘贴新 Cookie 以更新；留空并保存不会清除。若要清除请勾选下方。"></textarea>
+
+        <label class="field-label" for="bilibili-cookies">B站 Cookie <span id="bilibili-flag" class="cookie-flag"></span></label>
+        <textarea id="bilibili-cookies" class="settings-area" rows="3" placeholder="可选"></textarea>
+
+        <label class="field-label" for="youtube-cookies">YouTube Cookie <span id="youtube-flag" class="cookie-flag"></span></label>
+        <textarea id="youtube-cookies" class="settings-area" rows="3" placeholder="可选"></textarea>
+
+        <div class="clear-row">
+          <label><input type="checkbox" id="clear-douyin" /> 清除抖音 Cookie</label>
+          <label><input type="checkbox" id="clear-bilibili" /> 清除 B站 Cookie</label>
+          <label><input type="checkbox" id="clear-youtube" /> 清除 YouTube Cookie</label>
+        </div>
+
+        <p class="section-label">Webhook</p>
+        <label class="field-label" for="webhook-url">Webhook URL</label>
+        <input id="webhook-url" type="url" class="settings-input" placeholder="https://example.com/hook" />
+
+        <label class="field-label" for="webhook-secret">Webhook Secret <span id="secret-flag" class="cookie-flag"></span></label>
+        <input id="webhook-secret" type="text" class="settings-input" placeholder="可选 HMAC 密钥；留空不改，勾选清除可删除" autocomplete="off" />
+        <label class="clear-secret"><input type="checkbox" id="clear-secret" /> 清除 Secret</label>
+
+        <p class="section-label">扫描</p>
+        <label class="field-label" for="scan-interval">默认扫描间隔（秒）</label>
+        <input id="scan-interval" type="number" min="300" max="86400" value="2700" class="settings-input n-input-wide" />
+
+        <div class="input-row" style="margin-top: 18px">
+          <button type="submit" class="submit-btn" id="settings-save">保存设置</button>
+        </div>
+      </form>
+      <p id="settings-status" class="status-msg" hidden></p>
+    </section>
+
+    <footer>VID2TEXT — SETTINGS</footer>
+  </div>
+  <script src="/static/settings.js?v={{ static_v() }}"></script>
+</body>
+</html>

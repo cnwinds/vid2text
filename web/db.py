@@ -59,6 +59,93 @@ def init_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_tasks_client_ip_status "
                 "ON tasks(client_ip, status)"
             )
+        if "monitor_id" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN monitor_id INTEGER")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_monitor_id ON tasks(monitor_id)"
+            )
+
+        mv_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(monitor_videos)").fetchall()
+        }
+        if mv_cols:
+            if "like_count" not in mv_cols:
+                conn.execute(
+                    "ALTER TABLE monitor_videos ADD COLUMN like_count INTEGER NOT NULL DEFAULT 0"
+                )
+            if "comment_count" not in mv_cols:
+                conn.execute(
+                    "ALTER TABLE monitor_videos ADD COLUMN comment_count INTEGER NOT NULL DEFAULT 0"
+                )
+            if "play_count" not in mv_cols:
+                conn.execute(
+                    "ALTER TABLE monitor_videos ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0"
+                )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS monitors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL,
+                author_key TEXT NOT NULL,
+                author_name TEXT NOT NULL DEFAULT '',
+                profile_url TEXT NOT NULL DEFAULT '',
+                avatar_url TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                backfill_mode TEXT NOT NULL DEFAULT 'recent',
+                backfill_n INTEGER NOT NULL DEFAULT 10,
+                backfill_status TEXT NOT NULL DEFAULT 'pending',
+                backfill_cursor TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                scan_interval_sec INTEGER NOT NULL DEFAULT 2700,
+                last_scan_at TEXT NOT NULL DEFAULT '',
+                next_scan_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(platform, author_key)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_monitors_next_scan "
+            "ON monitors(enabled, next_scan_at)"
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS monitor_videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                monitor_id INTEGER NOT NULL,
+                platform TEXT NOT NULL,
+                video_id TEXT NOT NULL,
+                video_url TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                published_at TEXT NOT NULL DEFAULT '',
+                like_count INTEGER NOT NULL DEFAULT 0,
+                comment_count INTEGER NOT NULL DEFAULT 0,
+                play_count INTEGER NOT NULL DEFAULT 0,
+                task_id INTEGER,
+                discovered_at TEXT NOT NULL,
+                UNIQUE(platform, video_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_monitor_videos_monitor "
+            "ON monitor_videos(monitor_id, id DESC)"
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
 
 
@@ -98,15 +185,27 @@ def create_task(
     platform: str,
     video_id: str,
     client_ip: str = "",
+    monitor_id: int | None = None,
 ) -> dict[str, Any]:
     now = _utc_now()
     with get_conn() as conn:
         cur = conn.execute(
             """
-            INSERT INTO tasks (video_url, platform, video_id, status, client_ip, created_at, updated_at)
-            VALUES (?, ?, ?, 'pending', ?, ?, ?)
+            INSERT INTO tasks (
+                video_url, platform, video_id, status, client_ip, monitor_id,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
             """,
-            (video_url, platform, video_id, client_ip or "", now, now),
+            (
+                video_url,
+                platform,
+                video_id,
+                client_ip or "",
+                monitor_id,
+                now,
+                now,
+            ),
         )
         conn.commit()
         return get_task(cur.lastrowid)  # type: ignore[arg-type]
@@ -276,3 +375,296 @@ def claim_pending_task() -> dict[str, Any] | None:
         if updated and updated["status"] == "processing":
             return row_to_dict(updated)
         return None
+
+
+# ---- settings (KV) ----
+
+def get_setting(key: str, default: str = "") -> str:
+    with get_conn() as conn:
+        cur = conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cur.fetchone()
+        return str(row["value"]) if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    now = _utc_now()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (key, value, now),
+        )
+        conn.commit()
+
+
+def get_settings_map(keys: list[str]) -> dict[str, str]:
+    if not keys:
+        return {}
+    placeholders = ",".join("?" for _ in keys)
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
+            keys,
+        )
+        return {str(r["key"]): str(r["value"]) for r in cur.fetchall()}
+
+
+def set_settings(pairs: dict[str, str]) -> None:
+    if not pairs:
+        return
+    now = _utc_now()
+    with get_conn() as conn:
+        for key, value in pairs.items():
+            conn.execute(
+                """
+                INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (key, value, now),
+            )
+        conn.commit()
+
+
+# ---- monitors ----
+
+DEFAULT_SCAN_INTERVAL_SEC = 2700
+
+
+def create_monitor(
+    *,
+    platform: str,
+    author_key: str,
+    author_name: str = "",
+    profile_url: str = "",
+    avatar_url: str = "",
+    source_url: str = "",
+    backfill_mode: str = "recent",
+    backfill_n: int = 10,
+    scan_interval_sec: int | None = None,
+) -> dict[str, Any]:
+    now = _utc_now()
+    interval = scan_interval_sec
+    if interval is None:
+        raw = get_setting("default_scan_interval_sec", str(DEFAULT_SCAN_INTERVAL_SEC))
+        try:
+            interval = max(300, int(raw))
+        except ValueError:
+            interval = DEFAULT_SCAN_INTERVAL_SEC
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO monitors (
+                platform, author_key, author_name, profile_url, avatar_url, source_url,
+                backfill_mode, backfill_n, backfill_status, enabled, scan_interval_sec,
+                next_scan_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?)
+            """,
+            (
+                platform,
+                author_key,
+                author_name,
+                profile_url,
+                avatar_url,
+                source_url,
+                backfill_mode,
+                backfill_n,
+                interval,
+                now,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        return get_monitor(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def get_monitor(monitor_id: int) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        cur = conn.execute("SELECT * FROM monitors WHERE id = ?", (monitor_id,))
+        row = cur.fetchone()
+        return row_to_dict(row) if row else None
+
+
+def find_monitor(platform: str, author_key: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM monitors WHERE platform = ? AND author_key = ?",
+            (platform, author_key),
+        )
+        row = cur.fetchone()
+        return row_to_dict(row) if row else None
+
+
+def list_monitors(*, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT * FROM monitors
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        return [row_to_dict(r) for r in cur.fetchall()]
+
+
+def count_monitors() -> int:
+    with get_conn() as conn:
+        cur = conn.execute("SELECT COUNT(*) AS n FROM monitors")
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+
+def update_monitor(monitor_id: int, **fields: Any) -> dict[str, Any] | None:
+    if not fields:
+        return get_monitor(monitor_id)
+    fields["updated_at"] = _utc_now()
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [monitor_id]
+    with get_conn() as conn:
+        conn.execute(f"UPDATE monitors SET {cols} WHERE id = ?", values)
+        conn.commit()
+    return get_monitor(monitor_id)
+
+
+def delete_monitor(monitor_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM monitors WHERE id = ?", (monitor_id,))
+        conn.execute("DELETE FROM monitor_videos WHERE monitor_id = ?", (monitor_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def list_due_monitors(*, now_iso: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    now = now_iso or _utc_now()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT * FROM monitors
+            WHERE enabled = 1
+              AND (next_scan_at = '' OR next_scan_at <= ?)
+            ORDER BY next_scan_at ASC, id ASC
+            LIMIT ?
+            """,
+            (now, limit),
+        )
+        return [row_to_dict(r) for r in cur.fetchall()]
+
+
+# ---- monitor_videos ----
+
+def get_monitor_video(platform: str, video_id: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM monitor_videos WHERE platform = ? AND video_id = ?",
+            (platform, video_id),
+        )
+        row = cur.fetchone()
+        return row_to_dict(row) if row else None
+
+
+def upsert_monitor_video(
+    *,
+    monitor_id: int,
+    platform: str,
+    video_id: str,
+    video_url: str = "",
+    title: str = "",
+    published_at: str = "",
+    like_count: int = 0,
+    comment_count: int = 0,
+    play_count: int = 0,
+    task_id: int | None = None,
+) -> dict[str, Any]:
+    now = _utc_now()
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT * FROM monitor_videos WHERE platform = ? AND video_id = ?",
+            (platform, video_id),
+        ).fetchone()
+        if existing:
+            fields: dict[str, Any] = {}
+            if video_url:
+                fields["video_url"] = video_url
+            if title:
+                fields["title"] = title
+            if published_at:
+                fields["published_at"] = published_at
+            if like_count:
+                fields["like_count"] = like_count
+            if comment_count:
+                fields["comment_count"] = comment_count
+            if play_count:
+                fields["play_count"] = play_count
+            if task_id is not None:
+                fields["task_id"] = task_id
+            if fields:
+                cols = ", ".join(f"{k} = ?" for k in fields)
+                conn.execute(
+                    f"UPDATE monitor_videos SET {cols} WHERE id = ?",
+                    [*fields.values(), existing["id"]],
+                )
+                conn.commit()
+            cur = conn.execute(
+                "SELECT * FROM monitor_videos WHERE id = ?", (existing["id"],)
+            )
+            return row_to_dict(cur.fetchone())
+        cur = conn.execute(
+            """
+            INSERT INTO monitor_videos (
+                monitor_id, platform, video_id, video_url, title, published_at,
+                like_count, comment_count, play_count,
+                task_id, discovered_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                monitor_id,
+                platform,
+                video_id,
+                video_url,
+                title,
+                published_at,
+                like_count,
+                comment_count,
+                play_count,
+                task_id,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM monitor_videos WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return row_to_dict(row)
+
+
+def list_monitor_videos(
+    monitor_id: int, *, limit: int = 50, offset: int = 0
+) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT mv.*, t.status AS task_status, t.error_message AS task_error
+            FROM monitor_videos mv
+            LEFT JOIN tasks t ON t.id = mv.task_id
+            WHERE mv.monitor_id = ?
+            ORDER BY
+              COALESCE(NULLIF(mv.published_at, ''), mv.discovered_at) DESC,
+              mv.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (monitor_id, limit, offset),
+        )
+        return [row_to_dict(r) for r in cur.fetchall()]
+
+
+def count_monitor_videos(monitor_id: int) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT COUNT(*) AS n FROM monitor_videos WHERE monitor_id = ?",
+            (monitor_id,),
+        )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0

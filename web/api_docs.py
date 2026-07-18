@@ -311,7 +311,7 @@ curl -s "{b}/api/v1/subtitles?url=https://www.bilibili.com/video/BV1xx411c7mD"
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `field` | `text` | `text`（修正后优先）\| `raw` \| `corrected` |
+| `field` | `text` | `text`（修正后优先） / `raw` / `corrected` |
 
 ### 返回值
 
@@ -400,6 +400,22 @@ curl -s "{b}/api/v1/subtitles?url=https://www.bilibili.com/video/BV1xx411c7mD"
 | `processing.retry_after` | 处理中 | 建议轮询间隔（秒） |
 | `error` / `retry_url` | 失败 | 失败原因与重试地址 |
 | `progress_metrics` | 处理中 | 资源指标（供 Web 进度展示） |
+
+---
+
+## 账号监控
+
+### POST /api/v1/monitors
+
+粘贴作品或主页链接，解析作者并创建监控。`backfill_mode=recent|all`，`backfill_n` 为最近条数。
+
+### GET /api/v1/monitors
+
+分页列出监控。另有 `GET/PATCH/DELETE /api/v1/monitors/{{id}}`、`POST …/scan`、`GET …/videos`。
+
+### GET/PUT /api/v1/settings
+
+配置各平台 Cookie（写入不回显）、Webhook URL/密钥、默认扫描间隔。监控任务完成或失败时，若配置了 `webhook_url` 会 POST JSON 通知。
 """
 
 
@@ -716,6 +732,110 @@ def build_endpoint_specs(base: str) -> list[dict[str, Any]]:
                 resp(429, "IP 限流", "当前 IP 已有其他进行中的任务。", rate_limit_example(b)),
             ],
         },
+        {
+            "id": "post-monitors",
+            "method": "POST",
+            "path": "/api/v1/monitors",
+            "summary": "添加账号监控",
+            "description": "粘贴作品或主页链接，解析作者并开始监控；可选补采最近 N 条或可见全量。",
+            "curl": (
+                f"curl -i -s -X POST {b}/api/v1/monitors "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"url\":\"{sample_url}\",\"backfill_mode\":\"recent\",\"backfill_n\":10}}'"
+            ),
+            "request_body": [
+                {"name": "url", "type": "string", "required": True, "description": "作品或主页/频道 URL"},
+                {"name": "backfill_mode", "type": "string", "required": False, "description": "recent | all"},
+                {"name": "backfill_n", "type": "integer", "required": False, "description": "recent 时条数，默认 10"},
+                {"name": "scan_interval_sec", "type": "integer", "required": False, "description": "扫描间隔秒"},
+            ],
+            "request_example": {
+                "url": sample_url,
+                "backfill_mode": "recent",
+                "backfill_n": 10,
+            },
+            "responses": [
+                resp(
+                    201,
+                    "已创建",
+                    "返回监控对象；后台将按 next_scan_at 扫描并入队提取。",
+                    {
+                        "id": 1,
+                        "platform": "douyin",
+                        "author_key": "MS4wLjABAAAA…",
+                        "author_name": "示例作者",
+                        "backfill_mode": "recent",
+                        "backfill_n": 10,
+                        "backfill_status": "pending",
+                        "enabled": True,
+                        "scan_interval_sec": 2700,
+                        "video_count": 0,
+                    },
+                ),
+                resp(400, "解析失败", "URL 无效或无法解析作者。", error_example("解析作者失败: …")),
+            ],
+        },
+        {
+            "id": "get-monitors",
+            "method": "GET",
+            "path": "/api/v1/monitors",
+            "summary": "监控列表",
+            "description": "分页列出已添加的账号监控。",
+            "curl": f"curl -s '{b}/api/v1/monitors?limit=20'",
+            "request_query": [
+                {"name": "limit", "type": "integer", "required": False, "description": "每页条数"},
+                {"name": "offset", "type": "integer", "required": False, "description": "偏移"},
+            ],
+            "responses": [
+                resp(200, "列表", "items + pagination。", {"items": [], "pagination": {"limit": 20, "offset": 0, "total": 0, "has_more": False, "next_offset": None}}),
+            ],
+        },
+        {
+            "id": "get-settings",
+            "method": "GET",
+            "path": "/api/v1/settings",
+            "summary": "读取设置",
+            "description": "Cookie 只返回是否已配置，不回显明文；含 Webhook 与默认扫描间隔。",
+            "curl": f"curl -s {b}/api/v1/settings",
+            "responses": [
+                resp(
+                    200,
+                    "设置摘要",
+                    "不含 Cookie 明文。",
+                    {
+                        "douyin_cookies_set": False,
+                        "bilibili_cookies_set": False,
+                        "youtube_cookies_set": False,
+                        "webhook_url": "",
+                        "webhook_secret_set": False,
+                        "default_scan_interval_sec": 2700,
+                    },
+                ),
+            ],
+        },
+        {
+            "id": "put-settings",
+            "method": "PUT",
+            "path": "/api/v1/settings",
+            "summary": "更新设置",
+            "description": "写入各平台 Cookie、Webhook URL/密钥、默认扫描间隔。传空字符串可清除 Cookie。",
+            "curl": (
+                f"curl -i -s -X PUT {b}/api/v1/settings "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"webhook_url\":\"https://example.com/hook\",\"default_scan_interval_sec\":3600}}'"
+            ),
+            "request_body": [
+                {"name": "douyin_cookies", "type": "string", "required": False, "description": "抖音 Cookie"},
+                {"name": "bilibili_cookies", "type": "string", "required": False, "description": "B站 Cookie"},
+                {"name": "youtube_cookies", "type": "string", "required": False, "description": "YouTube Cookie"},
+                {"name": "webhook_url", "type": "string", "required": False, "description": "完成后 POST 的地址"},
+                {"name": "webhook_secret", "type": "string", "required": False, "description": "可选 HMAC 密钥"},
+                {"name": "default_scan_interval_sec", "type": "integer", "required": False, "description": "默认扫描间隔"},
+            ],
+            "responses": [
+                resp(200, "已更新", "返回与 GET /settings 相同的摘要。", {"webhook_url": "https://example.com/hook", "default_scan_interval_sec": 3600}),
+            ],
+        },
     ]
 
 
@@ -725,12 +845,12 @@ def build_schema_dict(base: str) -> dict[str, Any]:
     endpoints = build_endpoint_specs(b)
     return {
         "name": "vid2text",
-        "version": "1.2.0",
-        "description": "从视频 URL 获取字幕。",
+        "version": "1.3.0",
+        "description": "从视频 URL 获取字幕；支持账号监控自动采文案。",
         "base_url": b,
         "openapi_url": f"{b}/openapi.json",
         "docs_markdown": f"{b}/api/v1/docs.md",
-        "mental_model": "POST url → 200 有字幕 | 202 返回 id + poll_url | 422 失败",
+        "mental_model": "POST url → 字幕；POST /monitors → 盯账号新作自动提取",
         "endpoints": [
             {
                 **ep,

@@ -31,7 +31,7 @@ def _parse_progress_metrics(raw: Any) -> dict[str, Any]:
 
 def _ensure_ip_slot(client_ip: str, *, exclude_id: int | None = None) -> None:
     """同一 IP 同时只能有 1 个 pending/processing 任务。"""
-    if not client_ip or client_ip == "unknown":
+    if not client_ip or client_ip == "unknown" or client_ip == "monitor":
         return
     active = db.find_active_task_by_ip(client_ip, exclude_id=exclude_id)
     if active:

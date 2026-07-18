@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>vid2text — 账号监控</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <canvas id="bgCanvas" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <header class="subpage-header">
+      <p class="back-link"><a href="/">← 返回主页</a></p>
+      <div class="eyebrow"><span class="dot"></span>ACCOUNT MONITOR</div>
+      <h1 class="subpage-title">账号监控</h1>
+      <p class="sub">盯主播新作，自动提取文案 · 抖音 / B站 / YouTube</p>
+      <nav class="header-nav">
+        <a href="/">提取</a>
+        <a href="/monitors">监控</a>
+        <a href="/settings">设置</a>
+        <a href="/api-docs">API</a>
+      </nav>
+    </header>
+
+    <section class="panel expand-block is-open" id="add-monitor-block">
+      <button type="button" class="expand-head" id="toggle-add-form" aria-expanded="true">
+        <span class="expand-chevron" aria-hidden="true">▾</span>
+        <span class="expand-title">添加监控</span>
+      </button>
+      <div class="expand-body">
+        <form id="monitor-form">
+          <label class="field-label" for="monitor-url">作品链接或主页 / 频道链接</label>
+          <div class="input-row">
+            <input
+              id="monitor-url"
+              type="url"
+              name="url"
+              placeholder="https://www.douyin.com/user/… 或任意作品链接"
+              autocomplete="off"
+              required
+            />
+            <button type="submit" class="submit-btn" id="monitor-submit">添加</button>
+          </div>
+          <div class="monitor-options">
+            <label class="radio-line">
+              <input type="radio" name="backfill_mode" value="recent" checked />
+              补采最近
+              <input type="number" id="backfill-n" min="1" max="200" value="10" class="n-input" />
+              条
+            </label>
+            <label class="radio-line">
+              <input type="radio" name="backfill_mode" value="all" />
+              可见范围内全量补采（分批进行）
+            </label>
+          </div>
+        </form>
+        <p id="monitor-status" class="status-msg" hidden></p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="history-header">
+        <h2>监控列表</h2>
+        <button type="button" class="refresh-btn" id="refresh-monitors">刷新</button>
+      </div>
+      <div id="monitor-list" class="expand-list"></div>
+    </section>
+
+    <footer>VID2TEXT — ACCOUNT MONITOR</footer>
+  </div>
+  <script src="/static/monitors.js?v={{ static_v() }}"></script>
+</body>
+</html>

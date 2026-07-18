@@ -88,3 +88,94 @@ class RateLimitResponse(BaseModel):
     code: str = Field("rate_limit_active_task", description="错误码")
     active_id: int = Field(description="当前 IP 进行中的任务 ID")
     poll_url: str = Field(description="请轮询此 URL 等待当前任务完成")
+
+
+# ---- monitors / settings ----
+
+class MonitorCreateRequest(BaseModel):
+    url: str = Field(..., min_length=1, description="作品链接或主页/频道链接")
+    backfill_mode: Literal["recent", "all"] = Field(
+        "recent", description="历史补采：recent=最近 N 条，all=可见全量"
+    )
+    backfill_n: int = Field(10, ge=1, le=200, description="backfill_mode=recent 时的条数")
+    scan_interval_sec: int | None = Field(
+        None, ge=300, le=86400, description="扫描间隔秒数；默认用全局设置"
+    )
+
+
+class MonitorPatchRequest(BaseModel):
+    enabled: bool | None = None
+    scan_interval_sec: int | None = Field(None, ge=300, le=86400)
+    backfill_n: int | None = Field(None, ge=1, le=200)
+    backfill_mode: Literal["recent", "all"] | None = None
+
+
+class MonitorResponse(BaseModel):
+    id: int
+    platform: str
+    author_key: str
+    author_name: str = ""
+    profile_url: str = ""
+    avatar_url: str = ""
+    source_url: str = ""
+    backfill_mode: str = "recent"
+    backfill_n: int = 10
+    backfill_status: str = "pending"
+    enabled: bool = True
+    scan_interval_sec: int = 2700
+    last_scan_at: str = ""
+    next_scan_at: str = ""
+    last_error: str = ""
+    video_count: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class MonitorListResponse(BaseModel):
+    items: list[MonitorResponse]
+    pagination: PaginationMeta
+
+
+class MonitorVideoItem(BaseModel):
+    id: int
+    platform: str
+    video_id: str
+    video_url: str = ""
+    title: str = ""
+    published_at: str = ""
+    like_count: int = 0
+    comment_count: int = 0
+    play_count: int = 0
+    task_id: int | None = None
+    task_status: str | None = None
+    task_error: str | None = None
+    discovered_at: str = ""
+
+
+class MonitorVideoListResponse(BaseModel):
+    items: list[MonitorVideoItem]
+    pagination: PaginationMeta
+
+
+class SettingsPublicResponse(BaseModel):
+    douyin_cookies_set: bool = False
+    bilibili_cookies_set: bool = False
+    youtube_cookies_set: bool = False
+    webhook_url: str = ""
+    webhook_secret_set: bool = False
+    default_scan_interval_sec: int = 2700
+
+
+class SettingsUpdateRequest(BaseModel):
+    douyin_cookies: str | None = Field(None, description="抖音 Cookie；空字符串表示清除")
+    bilibili_cookies: str | None = None
+    youtube_cookies: str | None = None
+    webhook_url: str | None = None
+    webhook_secret: str | None = Field(None, description="可选 HMAC 密钥")
+    default_scan_interval_sec: int | None = Field(None, ge=300, le=86400)
+
+
+class ScanResultResponse(BaseModel):
+    fetched: int
+    enqueued: int
+    monitor: MonitorResponse

@@ -415,11 +415,13 @@ function fieldBoxClass(text, emptyFallback) {
 }
 
 function showStatus(text) {
+  if (!statusMsg) return;
   statusMsg.hidden = false;
   statusMsg.textContent = text;
 }
 
 function hideStatus() {
+  if (!statusMsg) return;
   statusMsg.hidden = true;
 }
 
@@ -432,6 +434,7 @@ function escapeHtml(str) {
 }
 
 function renderTask(task, animate = false) {
+  if (!resultSection || !resultsList) return;
   resultSection.hidden = false;
   viewingTaskId = task.id;
   currentTaskId = task.id;
@@ -684,6 +687,7 @@ function startProcessingAnim() {
     procAnim();
     procAnim = null;
   }
+  if (!procPanel || !procCanvas || !progFill) return;
   procPanel.hidden = false;
   stages.forEach((s) => s.classList.remove("active", "done"));
   progFill.style.width = "0%";
@@ -866,6 +870,7 @@ function stopProcessingAnim(flash = false) {
     procAnim();
     procAnim = null;
   }
+  if (!procPanel || !progFill) return;
   if (flash) {
     procPanel.classList.remove("flash");
     void procPanel.offsetWidth;
@@ -1012,6 +1017,117 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
+/** @type {Set<number>} */
+const expandedHistoryIds = new Set();
+
+function setHistoryExpand(block, open) {
+  block.classList.toggle("is-open", open);
+  const head = block.querySelector(".expand-head");
+  const chev = block.querySelector(".expand-chevron");
+  if (head) head.setAttribute("aria-expanded", open ? "true" : "false");
+  if (chev) chev.textContent = open ? "▾" : "▸";
+}
+
+function createHistoryBlock(view) {
+  const block = document.createElement("div");
+  const isOpen = expandedHistoryIds.has(view.id);
+  block.className = `expand-block hist-expand ${histItemClass(view.status)}${isOpen ? " is-open" : ""}`;
+  block.dataset.taskId = view.id;
+
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "expand-head";
+  head.setAttribute("aria-expanded", isOpen ? "true" : "false");
+
+  const chev = document.createElement("span");
+  chev.className = "expand-chevron";
+  chev.textContent = isOpen ? "▾" : "▸";
+  chev.setAttribute("aria-hidden", "true");
+
+  const row = document.createElement("div");
+  row.className = "hist-head-row";
+
+  const wave = document.createElement("div");
+  wave.className = "hwave";
+  buildHistWave(wave, randomWaveHeights());
+
+  const tag = document.createElement("span");
+  tag.className = "htag";
+  tag.textContent = view.platform;
+
+  const hurl = document.createElement("span");
+  hurl.className = "hurl";
+  hurl.textContent = view.title || view.video_url;
+  hurl.title = view.video_url;
+
+  const hstatus = document.createElement("span");
+  hstatus.className = "hstatus";
+  hstatus.textContent = STATUS_LABEL[view.status] || view.status;
+
+  row.append(wave, tag, hurl, hstatus);
+  head.append(chev, row);
+
+  const body = document.createElement("div");
+  body.className = "expand-body";
+
+  const descPreview = (view.description || "").trim() || "（无描述）";
+  const errHtml =
+    view.status === "failed" && view.error_message
+      ? `<div class="hist-detail-row"><span class="field-label">错误</span><div class="hist-detail-err">${escapeHtml(view.error_message)}</div></div>`
+      : "";
+
+  body.innerHTML = `
+    <div class="hist-detail-grid">
+      <div class="hist-detail-row">
+        <span class="field-label">链接</span>
+        <div class="hist-detail-url"><a href="${escapeHtml(view.video_url)}" target="_blank" rel="noopener">${escapeHtml(view.video_url)}</a></div>
+      </div>
+      <div class="hist-detail-row">
+        <span class="field-label">视频 ID</span>
+        <div class="hist-detail-url">${escapeHtml(view.video_id || "—")}</div>
+      </div>
+      <div class="hist-detail-row">
+        <span class="field-label">描述</span>
+        <div class="hist-detail-desc">${escapeHtml(descPreview)}</div>
+      </div>
+      ${errHtml}
+    </div>
+    <div class="hist-expand-actions">
+      <button type="button" class="refresh-btn" data-act="view">查看完整结果</button>
+      ${view.status === "failed" ? '<button type="button" class="refresh-btn" data-act="retry">重试</button>' : ""}
+    </div>`;
+
+  head.addEventListener("click", (e) => {
+    if (e.target.closest("button:not(.expand-head), a, input")) return;
+    const open = !block.classList.contains("is-open");
+    if (open) expandedHistoryIds.add(view.id);
+    else expandedHistoryIds.delete(view.id);
+    setHistoryExpand(block, open);
+  });
+
+  body.querySelector('[data-act="view"]')?.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    miniBurst(ev.clientX, ev.clientY);
+    const task = await fetchTask(view.id);
+    viewingTaskId = task.id;
+    currentTaskId = task.id;
+    renderTask(task, true);
+    resultSection.scrollIntoView({ behavior: "smooth" });
+    if (task.status === "pending" || task.status === "processing") {
+      startPolling(task.id);
+    }
+  });
+
+  body.querySelector('[data-act="retry"]')?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    miniBurst(ev.clientX, ev.clientY);
+    handleRetry(view.id);
+  });
+
+  block.append(head, body);
+  return block;
+}
+
 async function loadHistory() {
   try {
     const res = await fetch(`${SUBTITLES_API}?limit=20`);
@@ -1029,57 +1145,7 @@ async function loadHistory() {
 
     for (const item of data.items) {
       const view = subtitleToView(item);
-      const row = document.createElement("div");
-      row.className = `hist-item ${histItemClass(view.status)}`;
-      row.dataset.taskId = view.id;
-
-      const wave = document.createElement("div");
-      wave.className = "hwave";
-      buildHistWave(wave, randomWaveHeights());
-
-      const tag = document.createElement("span");
-      tag.className = "htag";
-      tag.textContent = view.platform;
-
-      const hurl = document.createElement("span");
-      hurl.className = "hurl";
-      hurl.textContent = view.title || view.video_url;
-      hurl.title = view.video_url;
-
-      const hstatus = document.createElement("span");
-      hstatus.className = "hstatus";
-      hstatus.textContent = STATUS_LABEL[view.status] || view.status;
-
-      row.append(wave, tag, hurl, hstatus);
-
-      if (view.status === "failed") {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "history-retry";
-        btn.textContent = "重试";
-        btn.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          miniBurst(ev.clientX, ev.clientY);
-          handleRetry(view.id);
-        });
-        row.appendChild(btn);
-      }
-
-      row.addEventListener("click", async () => {
-        const task = await fetchTask(view.id);
-        // 切换查看目标；后台轮询中的其他任务不抢占结果区
-        viewingTaskId = task.id;
-        currentTaskId = task.id;
-        renderTask(task, true);
-        resultSection.scrollIntoView({ behavior: "smooth" });
-        if (task.status === "pending" || task.status === "processing") {
-          // 查看进行中的任务时，进度与结果都跟它对齐
-          startPolling(task.id);
-        }
-        // 若点的是已完成记录，保留原有 polling（进度条继续显示转换中任务）
-      });
-
-      historyList.appendChild(row);
+      historyList.appendChild(createHistoryBlock(view));
     }
   } catch {
     historyList.innerHTML = '<div class="empty-history">加载失败</div>';
@@ -1101,7 +1167,7 @@ async function handleRetry(taskId) {
 
 refreshHistoryBtn.addEventListener("click", (e) => {
   miniBurst(e.clientX, e.clientY);
-  historyList.querySelectorAll(".hist-item").forEach((el, i) => {
+  historyList.querySelectorAll(".hist-expand").forEach((el, i) => {
     el.style.transition = "opacity .25s ease";
     el.style.opacity = "0.35";
     setTimeout(() => {

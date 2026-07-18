@@ -19,7 +19,12 @@
         <div class="wave-hero" id="heroWave" aria-hidden="true"></div>
       </div>
       <p class="sub">粘贴视频链接，提取口播 / 字幕文本</p>
-      <p class="header-entry"><a href="/api-docs">API 接口说明 →</a></p>
+      <nav class="header-nav">
+        <a href="/">提取</a>
+        <a href="/monitors">账号监控</a>
+        <a href="/settings">设置</a>
+        <a href="/api-docs">API 接口说明</a>
+      </nav>
     </header>
 
     <section class="panel">
@@ -88,11 +93,11 @@
         <h2>历史记录</h2>
         <button type="button" class="refresh-btn" id="refresh-history">刷新</button>
       </div>
-      <div id="history-list"></div>
+      <div id="history-list" class="expand-list"></div>
     </section>
 
     <footer>VID2TEXT — LOCAL EXTRACTION ENGINE</footer>
   </div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v={{ static_v() }}"></script>
 </body>
 </html>
