@@ -74,6 +74,10 @@ class ProcessingInfo(BaseModel):
     message: str = "正在提取字幕，请稍后再次请求"
     notice: str = Field("", description="续跑/中断说明（如有）")
     resume_from: str = Field("", description="从哪个步骤续跑（如有缓存）")
+    queue_ahead: int = Field(
+        0,
+        description="前面还有多少条任务在排队（pending/processing）；0 表示即将或正在执行",
+    )
 
 
 class SubtitleResponse(BaseModel):

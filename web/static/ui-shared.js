@@ -16,6 +16,70 @@ function platformClass(p) {
   return { douyin: "plat-douyin", bilibili: "plat-bili", youtube: "plat-yt" }[p] || "";
 }
 
+function parseProgressMetrics(raw) {
+  if (!raw) return {};
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+/** processing 状态下是否在等待某步骤的资源池空位（非真正执行中） */
+function isTaskStepQueued(task) {
+  if (!task || task.status !== "processing") return false;
+  const m = parseProgressMetrics(task.progress_metrics);
+  return Boolean(m.queued_step || String(m.detail || "").includes("排队等待"));
+}
+
+/** 各 pipeline 步骤进行中的短标签（历史卡片 / 进度条） */
+const STEP_RUNNING_LABEL = {
+  parse: "解析中",
+  fetch_meta: "获取信息中",
+  fetch_subtitle: "获取字幕中",
+  download: "下载中",
+  extract_audio: "提取音轨中",
+  stt: "语音识别中",
+  correct: "修正中",
+};
+
+function taskActiveStepKey(task) {
+  if (!task) return "";
+  const m = parseProgressMetrics(task.progress_metrics);
+  if (task.status === "processing" && isTaskStepQueued(task)) {
+    return String(m.queued_step || m.step || task.progress_step || "").trim();
+  }
+  return String(task.progress_step || m.step || "").trim();
+}
+
+/** 任务当前状态短文案：排队中 / 下载中 / 等待 · 语音识别中 等 */
+function taskRunningStatusLabel(task) {
+  if (!task) return "";
+  if (task.status === "pending") {
+    const ahead = Number(task.queue_ahead) || 0;
+    return ahead > 0 ? `排队 · 前 ${ahead}` : "排队中";
+  }
+  if (task.status !== "processing") return "";
+  if (isTaskStepQueued(task)) {
+    const m = parseProgressMetrics(task.progress_metrics);
+    if (m.detail && String(m.detail).includes("排队等待")) {
+      return String(m.detail).replace("排队等待 · ", "等待 · ");
+    }
+    const qs = String(m.queued_step || "").trim();
+    if (qs && STEP_RUNNING_LABEL[qs]) {
+      return `等待 · ${STEP_RUNNING_LABEL[qs]}`;
+    }
+    return "排队等待";
+  }
+  const key = taskActiveStepKey(task);
+  if (key && STEP_RUNNING_LABEL[key]) return STEP_RUNNING_LABEL[key];
+  return "处理中";
+}
+
 function platformLogoHtml(platform) {
   const label = platformLabel(platform);
   if (platform === "douyin") {

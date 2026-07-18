@@ -5,11 +5,15 @@ from __future__ import annotations
 import gc
 import re
 import subprocess
+import threading
 import time
 import tracemalloc
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+
+_sensevoice_lock = threading.Lock()
+_sensevoice_models: dict[tuple[str, bool, str], Any] = {}
 
 
 @dataclass
@@ -313,6 +317,25 @@ def _strip_sensevoice_tags(text: str) -> str:
     )
 
 
+def _get_sensevoice_model(model_dir: str, *, quantize: bool, device_id: str) -> Any:
+    """复用已加载的 SenseVoice 实例，避免每次 STT 重复占内存。"""
+    key = (model_dir, quantize, device_id)
+    with _sensevoice_lock:
+        cached = _sensevoice_models.get(key)
+        if cached is not None:
+            return cached
+        from funasr_onnx import SenseVoiceSmall
+
+        cached = SenseVoiceSmall(
+            model_dir,
+            batch_size=1,
+            device_id=device_id,
+            quantize=quantize,
+        )
+        _sensevoice_models[key] = cached
+        return cached
+
+
 def transcribe_sensevoice(
     audio_path: Path,
     language: str = "zh",
@@ -330,11 +353,10 @@ def transcribe_sensevoice(
 
     model_dir = _resolve_sensevoice_model_dir(model_name)
     quantize = model_name.endswith("-onnx") or Path(model_dir, "model_quant.onnx").exists()
-    model = SenseVoiceSmall(
+    model = _get_sensevoice_model(
         model_dir,
-        batch_size=1,
-        device_id=_sensevoice_device_id(device),
         quantize=quantize,
+        device_id=_sensevoice_device_id(device),
     )
     lang_map = {"zh": "zh", "en": "en", "auto": "auto", "yue": "yue", "ja": "ja", "ko": "ko"}
     lang = lang_map.get(language, "auto")

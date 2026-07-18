@@ -13,6 +13,8 @@
   --err: #ff5d6c;
   --ok: #46e0c9;
   --warn: #f5b942;
+  --queue: #f5b942;
+  --active: #7aa2ff;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --disp: "Space Grotesk", "PingFang SC", system-ui, sans-serif;
   --scrollbar-size: 8px;
@@ -454,6 +456,21 @@ h1 {
   animation: progress-dot 1.2s ease-in-out infinite;
 }
 
+.task-proc-panel.is-pending .progress-bar-label::before {
+  background: var(--queue);
+  box-shadow: 0 0 0 2px rgba(245, 185, 66, 0.15);
+}
+
+.task-proc-panel.is-processing .progress-bar-label::before {
+  background: var(--active);
+  box-shadow: 0 0 0 2px rgba(122, 162, 255, 0.22);
+}
+
+.task-proc-panel.is-processing .progress-fill:not(.is-complete) {
+  background: linear-gradient(90deg, #6896ff, #9a8cff);
+  opacity: 0.95;
+}
+
 .task-proc-panel:has(.progress-fill.is-complete) .progress-bar-label::before {
   background: var(--signal);
   box-shadow: 0 0 0 2px rgba(70, 224, 201, 0.15);
@@ -571,6 +588,21 @@ h1 {
   opacity: 1;
 }
 
+.stage-row .stage.queued {
+  color: var(--queue);
+}
+
+.stage-row .stage.queued::before {
+  background: var(--queue);
+  box-shadow: 0 0 6px rgba(245, 185, 66, 0.35);
+  animation: blink 1.4s ease-in-out infinite;
+}
+
+.stage-row .stage.queued .stage-meta {
+  color: var(--queue);
+  opacity: 1;
+}
+
 .stage-row .stage.done {
   color: var(--text-mid);
 }
@@ -671,9 +703,9 @@ h1 {
 }
 
 .status-badge.run {
-  color: var(--violet);
-  background: rgba(154, 140, 255, 0.12);
-  border: 1px solid rgba(154, 140, 255, 0.35);
+  color: var(--active);
+  background: rgba(122, 162, 255, 0.12);
+  border: 1px solid rgba(122, 162, 255, 0.35);
 }
 
 .video-url {
@@ -853,7 +885,7 @@ h1 {
 
 .hist-item.is-run .hwave span,
 .hist-expand.is-run .hwave span {
-  background: var(--violet);
+  background: var(--active);
 }
 
 .hist-item .htag,
@@ -892,10 +924,13 @@ h1 {
 }
 
 .hist-item.is-run .hstatus,
+.hist-expand.is-run .hstatus {
+  color: var(--active);
+}
+
 .hist-item.is-wait .hstatus,
-.hist-expand.is-run .hstatus,
 .hist-expand.is-wait .hstatus {
-  color: var(--warn);
+  color: var(--queue);
 }
 
 .empty-history {
@@ -3287,6 +3322,12 @@ body.m-modal-open {
   border: 1px solid var(--line);
 }
 
+.td-meta-pill-live {
+  color: var(--signal);
+  border-color: rgba(70, 224, 201, 0.35);
+  background: rgba(70, 224, 201, 0.08);
+}
+
 .td-transcript {
   max-height: min(42vh, 360px);
   overflow: auto;
@@ -3389,36 +3430,51 @@ body.m-modal-open {
 /* ---- history cards (home) ---- */
 .hist-card {
   cursor: pointer;
+  border-width: 1.5px;
 }
 
 .hist-card.hist-done {
-  border-color: rgba(70, 224, 201, 0.18);
+  border-color: rgba(70, 224, 201, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(70, 224, 201, 0.06);
 }
 
-.hist-card.hist-pending,
+.hist-card.hist-pending {
+  border-color: rgba(245, 185, 66, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(245, 185, 66, 0.06);
+}
+
 .hist-card.hist-processing {
-  border-color: rgba(245, 185, 66, 0.16);
+  border-color: rgba(122, 162, 255, 0.48);
+  box-shadow:
+    inset 0 0 0 1px rgba(122, 162, 255, 0.08),
+    0 0 18px rgba(122, 162, 255, 0.06);
+}
+
+.hist-card.hist-pending:hover {
+  border-color: rgba(245, 185, 66, 0.58);
+  box-shadow: inset 0 0 0 1px rgba(245, 185, 66, 0.1);
+}
+
+.hist-card.hist-processing:hover {
+  border-color: rgba(122, 162, 255, 0.62);
+  box-shadow:
+    inset 0 0 0 1px rgba(122, 162, 255, 0.12),
+    0 0 22px rgba(122, 162, 255, 0.1);
 }
 
 .hist-card.hist-fail {
-  border-color: rgba(255, 93, 108, 0.16);
+  border-color: rgba(255, 93, 108, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(255, 93, 108, 0.05);
 }
 
 .hist-card.hist-done:hover {
-  border-color: rgba(70, 224, 201, 0.28);
-}
-
-.hist-card.hist-pending:hover,
-.hist-card.hist-processing:hover {
-  border-color: rgba(245, 185, 66, 0.26);
+  border-color: rgba(70, 224, 201, 0.58);
+  box-shadow: inset 0 0 0 1px rgba(70, 224, 201, 0.1);
 }
 
 .hist-card.hist-fail:hover {
-  border-color: rgba(255, 93, 108, 0.24);
-}
-
-.hist-card:hover {
-  box-shadow: none;
+  border-color: rgba(255, 93, 108, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(255, 93, 108, 0.08);
 }
 
 .hist-card .m-card-shell,
@@ -3466,6 +3522,46 @@ body.m-modal-open {
   gap: 6px 10px;
   min-width: 0;
   text-align: left;
+}
+
+.hist-card-status {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.hist-card-status-pending {
+  color: var(--queue);
+  background: rgba(245, 185, 66, 0.12);
+  border: 1px solid rgba(245, 185, 66, 0.32);
+}
+
+.hist-card-status-processing {
+  color: var(--active);
+  background: rgba(122, 162, 255, 0.12);
+  border: 1px solid rgba(122, 162, 255, 0.35);
+  animation: hist-status-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes hist-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hist-card-status-processing {
+    animation: none;
+  }
 }
 
 .hist-card-actions {

@@ -15,6 +15,8 @@ from douyin_to_text.progress_metrics import MetricsCallback, run_monitored
 import httpx
 import yt_dlp
 
+from douyin_to_text.network import ytdlp_proxy_opts
+from douyin_to_text.ytdlp_throttle import is_youtube_url, run_ytdlp, youtube_ytdlp_extra_opts
 from douyin_to_text.subtitle_parser import parse_subtitle_content, parse_subtitle_file
 
 PREFERRED_SUB_LANGS = [
@@ -46,11 +48,14 @@ def _ytdlp_base_opts(
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        **ytdlp_proxy_opts(),
     }
     if "bilibili.com" in url or "b23.tv" in url:
         opts["http_headers"] = dict(_BILI_HEADERS)
     if cookies:
         opts["cookiefile"] = cookies
+    if is_youtube_url(url):
+        opts.update(youtube_ytdlp_extra_opts())
     if extra:
         opts.update(extra)
     return opts
@@ -76,16 +81,12 @@ class SubtitleResult:
 
 def extract_info(url: str, cookies: str | None = None) -> YtDlpMetadata:
     opts = _ytdlp_base_opts(url, cookies=cookies, extra={"skip_download": True})
-    try:
+
+    def _do() -> dict[str, Any]:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as exc:
-        msg = str(exc)
-        if "412" in msg and ("bilibili.com" in url or "b23.tv" in url):
-            raise RuntimeError(
-                "B 站返回 412（需登录态）。请到设置页配置「B站 Cookie」后重试。"
-            ) from exc
-        raise
+            return ydl.extract_info(url, download=False)
+
+    info = run_ytdlp(url, _do)
     return YtDlpMetadata(
         video_id=str(info.get("id") or ""),
         title=info.get("title") or "",
@@ -137,8 +138,11 @@ def _download_subtitle_via_ytdlp(
         },
     )
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.download([url])
+    def _do() -> None:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+
+    run_ytdlp(url, _do)
 
     files = sorted(work_dir.glob("sub.*.vtt")) + sorted(work_dir.glob("sub.*.srt"))
     if not files:
@@ -280,19 +284,12 @@ def download_audio(
     if on_download_progress:
         opts["progress_hooks"] = [hook]
 
-    try:
+    def _do() -> dict[str, Any]:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            vid = info.get("id") or "audio"
-    except Exception as exc:
-        msg = str(exc)
-        if "412" in msg and ("bilibili.com" in url or "b23.tv" in url):
-            raise RuntimeError(
-                "B 站返回 412（需登录态）。请到设置页配置「B站 Cookie」后重试。"
-            ) from exc
-        raise
+            return ydl.extract_info(url, download=True)
 
-    wav = work_dir / f"{vid}.wav"
+    info = run_ytdlp(url, _do)
+    vid = info.get("id") or "audio"
     if wav.exists():
         return wav
 
@@ -340,16 +337,11 @@ def download_video(
             "outtmpl": outtmpl,
         },
     )
-    try:
+    def _do() -> None:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(url, download=True)
-    except Exception as exc:
-        msg = str(exc)
-        if "412" in msg and ("bilibili.com" in url or "b23.tv" in url):
-            raise RuntimeError(
-                "B 站返回 412（需登录态）。请到设置页配置「B站 Cookie」后重试。"
-            ) from exc
-        raise
+
+    run_ytdlp(url, _do)
 
     if target.is_file() and target.stat().st_size > 0:
         return target

@@ -208,7 +208,7 @@ function lerpMetrics() {
 
 const STATUS_LABEL = {
   pending: "排队中",
-  processing: "处理中",
+  processing: "转换中",
   done: "成功",
   failed: "失败",
 };
@@ -488,11 +488,40 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-function histStatusClass(status) {
+function histStatusClass(status, task) {
   if (status === "done") return "hist-done";
   if (status === "failed") return "hist-fail";
   if (status === "pending") return "hist-pending";
+  if (task && isTaskStepQueued(task)) return "hist-pending";
   return "hist-processing";
+}
+
+function histCardStatusHtml(view) {
+  if (view.status === "pending") {
+    const label = taskRunningStatusLabel(view);
+    return `<span class="hist-card-status hist-card-status-pending">${escapeHtml(label)}</span>`;
+  }
+  if (view.status === "processing") {
+    const label = taskRunningStatusLabel(view);
+    const queued = isTaskStepQueued(view);
+    const cls = queued ? "hist-card-status-pending" : "hist-card-status-processing";
+    return `<span class="hist-card-status ${cls}">${escapeHtml(label)}</span>`;
+  }
+  return "";
+}
+
+function applyHistCardStatus(block, view) {
+  block.classList.remove("hist-done", "hist-fail", "hist-pending", "hist-processing");
+  block.classList.add(histStatusClass(view.status, view));
+  const html = histCardStatusHtml(view);
+  const meta = block.querySelector(".hist-card-meta");
+  let pill = block.querySelector(".hist-card-status");
+  if (html) {
+    if (pill) pill.outerHTML = html;
+    else meta?.insertAdjacentHTML("afterbegin", html);
+  } else if (pill) {
+    pill.remove();
+  }
 }
 
 async function copyToClipboard(text, btn) {
@@ -537,12 +566,16 @@ function taskTranscriptText(task) {
   return String(task.corrected_transcript || task.raw_transcript || "").trim();
 }
 
+function hasTranscript(task) {
+  return !!taskTranscriptText(task);
+}
+
 function historyTranscriptText(view) {
   return taskTranscriptText(view);
 }
 
 function hasHistoryTranscript(view) {
-  return view.status === "done" && !!historyTranscriptText(view);
+  return hasTranscript(view);
 }
 
 function taskVideoDownloadApi(taskId) {
@@ -619,7 +652,7 @@ function buildTaskHeroHtml(task) {
 function buildTaskActionBarHtml(task) {
   const transcript = taskTranscriptText(task);
   const parts = [];
-  if (task.status === "done" && transcript) {
+  if (transcript) {
     parts.push(
       `<button type="button" class="td-act td-act-primary" id="modal-copy-text-btn">${ICON_COPY}<span>复制文稿</span></button>`
     );
@@ -636,19 +669,23 @@ function buildTaskActionBarHtml(task) {
 }
 
 function buildTranscriptSectionHtml(task) {
-  if (taskIsActive(task.status)) return "";
   const text = taskTranscriptText(task);
   if (!text) {
+    if (taskIsActive(task.status)) return "";
     return `
       <section class="td-section td-section-empty">
         <p>暂无口播文稿${task.status === "failed" ? "（提取失败）" : ""}</p>
       </section>`;
   }
+  const live = taskIsActive(task.status);
+  const metaPill = live
+    ? `<span class="td-meta-pill td-meta-pill-live">转录完成 · 后处理中</span>`
+    : `<span class="td-meta-pill">${text.length.toLocaleString()} 字</span>`;
   return `
     <section class="td-section td-section-hero">
       <div class="td-section-head">
         <h4 class="td-section-title">口播文稿</h4>
-        <span class="td-meta-pill">${text.length.toLocaleString()} 字</span>
+        ${metaPill}
       </div>
       <div class="td-transcript">${escapeHtml(text)}</div>
     </section>`;
@@ -716,7 +753,9 @@ function buildTaskDetailHtml(task) {
 
   const procHtml = taskIsActive(task.status) ? buildProcessingPanelHtml() : "";
   const heroHtml = buildTaskHeroHtml(task);
-  const actionBarHtml = taskIsActive(task.status) ? "" : buildTaskActionBarHtml(task);
+  const hasPartial = hasTranscript(task);
+  const actionBarHtml =
+    taskIsActive(task.status) && !hasPartial ? "" : buildTaskActionBarHtml(task);
   const transcriptHtml = buildTranscriptSectionHtml(task);
   const extrasHtml = buildTaskExtrasHtml(task);
 
@@ -808,6 +847,126 @@ function renderTask(task, animate = false) {
   openTaskModal(task, animate);
 }
 
+function patchTaskHero(inModal, task) {
+  const titleEl = inModal.querySelector(".td-hero-title");
+  if (titleEl) {
+    titleEl.textContent = task.title || task.video_url || `任务 #${task.id}`;
+  }
+  const authorEl = inModal.querySelector(".td-hero-author");
+  if (authorEl) {
+    authorEl.textContent = historyAuthorLabel(task) || "未知播主";
+  }
+  const durationEl = inModal.querySelector(".td-hero-duration");
+  const durationLabel = taskDurationLabel(task);
+  if (durationEl) {
+    if (durationLabel) durationEl.textContent = durationLabel;
+  } else if (durationLabel) {
+    const meta = inModal.querySelector(".td-hero-meta");
+    meta?.insertAdjacentHTML(
+      "beforeend",
+      `<span class="td-hero-duration">${escapeHtml(durationLabel)}</span>`
+    );
+  }
+  const avatarCol = inModal.querySelector(".m-avatar-col");
+  if (avatarCol) {
+    const wrap = document.createElement("div");
+    wrap.innerHTML = renderPlatformAvatarCol(task.platform, historyAvatarInner(task));
+    avatarCol.replaceWith(wrap.firstElementChild);
+  }
+}
+
+function ensureTranscriptSection(inModal, task) {
+  const body = inModal.querySelector(".task-detail-body");
+  if (!body) return;
+  const html = buildTranscriptSectionHtml(task);
+  if (!html) return;
+  const existing = body.querySelector(".td-section-hero, .td-section-empty");
+  if (existing) {
+    existing.outerHTML = html;
+    return;
+  }
+  const actionBar = body.querySelector(".td-action-bar");
+  if (actionBar) actionBar.insertAdjacentHTML("afterend", html);
+  else body.insertAdjacentHTML("beforeend", html);
+}
+
+function ensureTaskActionBar(inModal, task) {
+  const body = inModal.querySelector(".task-detail-body");
+  if (!body || body.querySelector(".td-action-bar")) return;
+  const html = buildTaskActionBarHtml(task);
+  if (!html) return;
+  const hero = body.querySelector(".td-hero");
+  if (hero) hero.insertAdjacentHTML("afterend", html);
+  else body.insertAdjacentHTML("afterbegin", html);
+  bindTaskModalActions(task);
+}
+
+function patchHistoryCard(task) {
+  if (!historyList) return;
+  const block = historyList.querySelector(`.hist-card[data-task-id="${task.id}"]`);
+  if (!block) return;
+
+  applyHistCardStatus(block, task);
+
+  const titleText = historyTitleLabel(task);
+  const shortTitle =
+    titleText.length > 72 ? `${titleText.slice(0, 72)}…` : titleText;
+  const titleEl = block.querySelector(".hist-card-title");
+  if (titleEl) titleEl.textContent = shortTitle;
+
+  const author = historyAuthorLabel(task);
+  const authorEl = block.querySelector(".hist-card-author");
+  if (authorEl) {
+    authorEl.innerHTML = author
+      ? author.length > 28
+        ? `${escapeHtml(author.slice(0, 28))}…`
+        : escapeHtml(author)
+      : `<span class="hist-card-author-muted">未知播主</span>`;
+  }
+
+  const avatarCol = block.querySelector(".m-avatar-col");
+  if (avatarCol) {
+    const wrap = document.createElement("div");
+    wrap.innerHTML = renderPlatformAvatarCol(task.platform, historyAvatarInner(task));
+    avatarCol.replaceWith(wrap.firstElementChild);
+  }
+
+  const durationLabel = taskDurationLabel(task);
+  let durationEl = block.querySelector(".hist-card-duration");
+  if (durationLabel) {
+    if (durationEl) durationEl.textContent = durationLabel;
+    else {
+      block.querySelector(".hist-card-meta")?.insertAdjacentHTML(
+        "beforeend",
+        `<span class="hist-card-duration">${escapeHtml(durationLabel)}</span>`
+      );
+    }
+  }
+
+  if (!hasTranscript(task)) return;
+  let actions = block.querySelector(".hist-card-actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "hist-card-actions";
+    block.querySelector(".hist-card-top")?.appendChild(actions);
+  }
+  if (!actions.querySelector(".hist-act-primary")) {
+    actions.insertAdjacentHTML(
+      "afterbegin",
+      histActionBtn("primary", "复制口播文稿", ICON_COPY)
+    );
+    actions.querySelector(".hist-act-primary")?.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        const fresh = await fetchTask(task.id);
+        copyToClipboard(taskTranscriptText(fresh), e.currentTarget);
+      } catch (err) {
+        showStatus(err.message || "复制失败");
+      }
+    });
+  }
+}
+
 function patchTaskStatus(task) {
   const inModal =
     taskModal &&
@@ -823,18 +982,21 @@ function patchTaskStatus(task) {
     }
     return;
   }
-  const durationEl = inModal.querySelector(".td-hero-duration");
-  const durationLabel = taskDurationLabel(task);
-  if (durationEl && durationLabel) {
-    durationEl.textContent = durationLabel;
-  }
+
+  patchTaskHero(inModal, task);
 
   const transcriptEl = inModal.querySelector(".td-transcript");
   const text = taskTranscriptText(task);
   if (transcriptEl && text) {
     transcriptEl.textContent = text;
-    const pill = inModal.querySelector(".td-meta-pill");
-    if (pill) pill.textContent = `${text.length.toLocaleString()} 字`;
+    const pill = inModal.querySelector(".td-section-head .td-meta-pill");
+    if (pill && !pill.classList.contains("td-meta-pill-live")) {
+      pill.textContent = `${text.length.toLocaleString()} 字`;
+    }
+  } else if (text) {
+    ensureTaskActionBar(inModal, task);
+    ensureTranscriptSection(inModal, task);
+    bindTaskModalActions(task);
   }
 
   if (task.status === "done" || task.status === "failed") {
@@ -872,6 +1034,7 @@ function subtitleToView(data) {
     progress_step: data.processing?.step || "",
     progress_notice: data.processing?.notice || "",
     progress_resume_from: data.processing?.resume_from || "",
+    queue_ahead: Number(data.processing?.queue_ahead) || 0,
     progress_metrics: data.progress_metrics || {},
     cached: data.cached,
   };
@@ -954,6 +1117,11 @@ function computeProgressPct(task, activeIdx, status) {
 function updateProcProgress(task) {
   const proc = getProcElements();
   const { progress_step: step, status } = task;
+  const pm = parseProgressMetrics(task.progress_metrics);
+  const queuedStep = pm.queued_step || "";
+  const isStepQueued =
+    status === "processing" &&
+    (queuedStep || String(pm.detail || "").includes("排队等待"));
   let activeIdx = -1;
   let metrics = null;
 
@@ -965,6 +1133,18 @@ function updateProcProgress(task) {
     activeIdx = PIPELINE_STEPS.length;
     metrics = { activity: 1, cpu: 0, network_kbps: 0, kind: "idle", detail: "完成", facts: [] };
     setMetricTarget(metrics);
+  } else if (isStepQueued) {
+    const waitKey = queuedStep || step;
+    activeIdx = STEP_INDEX[waitKey] ?? STEP_INDEX[step] ?? 0;
+    metrics = {
+      kind: "idle",
+      activity: 0.06,
+      cpu: 0,
+      network_kbps: 0,
+      detail: pm.detail || "排队等待",
+      facts: [],
+    };
+    setMetricTarget(metrics);
   } else if (step && STEP_INDEX[step] !== undefined) {
     activeIdx = STEP_INDEX[step];
     metrics = normalizeMetrics(task.progress_metrics, step);
@@ -975,7 +1155,9 @@ function updateProcProgress(task) {
     setMetricTarget(metrics);
   } else if (status === "pending") {
     activeIdx = 0;
-    metrics = { kind: "idle", activity: 0.1, cpu: 0, network_kbps: 0, detail: "排队中", facts: [] };
+    const ahead = Number(task.queue_ahead) || 0;
+    const detail = ahead > 0 ? `排队中 · 前面 ${ahead} 个` : "排队中";
+    metrics = { kind: "idle", activity: 0.1, cpu: 0, network_kbps: 0, detail, facts: [] };
     setMetricTarget(metrics);
   }
 
@@ -988,9 +1170,11 @@ function updateProcProgress(task) {
 
   if (proc?.stages) {
     proc.stages.forEach((el, i) => {
-      el.classList.remove("active", "done");
+      el.classList.remove("active", "done", "queued");
       if (status === "done" || i < activeIdx) {
         el.classList.add("done");
+      } else if (isStepQueued && i === activeIdx) {
+        el.classList.add("queued");
       } else if (i === activeIdx) {
         el.classList.add("active");
       }
@@ -1010,12 +1194,24 @@ function updateProcProgress(task) {
     proc.progFill.classList.toggle("is-complete", status === "done" || pct >= 100);
   }
   if (proc?.progPct) proc.progPct.textContent = `${Math.round(pct)}%`;
+  if (proc?.panel) {
+    proc.panel.classList.toggle("is-pending", status === "pending" || isStepQueued);
+    proc.panel.classList.toggle("is-processing", status === "processing" && !isStepQueued);
+  }
   if (proc?.progLabel) {
-    proc.progLabel.textContent = status === "done" ? "已完成" : stepLabel;
+    if (status === "done") proc.progLabel.textContent = "已完成";
+    else if (isStepQueued) {
+      proc.progLabel.textContent = pm.detail || "排队等待";
+    } else {
+      proc.progLabel.textContent = taskRunningStatusLabel(task) || stepLabel;
+    }
   }
 
   if (status === "pending" || status === "processing") {
-    let statusText = `任务 #${task.id} · ${stepLabel}…`;
+    let statusText = `任务 #${task.id} · ${taskRunningStatusLabel(task) || stepLabel}`;
+    if (status === "pending" && (Number(task.queue_ahead) || 0) > 0) {
+      statusText = `任务 #${task.id} · 排队中（前面还有 ${task.queue_ahead} 个）`;
+    }
     if (task.progress_notice) {
       statusText += ` · ${task.progress_notice.replace(/^resume:/, "")}`;
     }
@@ -1390,6 +1586,7 @@ function startPolling(taskId) {
 
       // 进度面板始终跟随后台任务
       updateProcProgress(task);
+      patchHistoryCard(task);
 
       if (task.status === "done") {
         stopPolling();
@@ -1510,7 +1707,7 @@ async function openHistoryDetail(taskId, ev) {
 function createHistoryBlock(view) {
   const plat = platformClass(view.platform);
   const block = document.createElement("article");
-  block.className = `m-card hist-card ${histStatusClass(view.status)} ${plat}`;
+  block.className = `m-card hist-card ${histStatusClass(view.status, view)} ${plat}`;
   block.dataset.taskId = view.id;
 
   const titleText = historyTitleLabel(view);
@@ -1547,6 +1744,7 @@ function createHistoryBlock(view) {
         <div class="hist-card-main">
           <strong class="m-card-name hist-card-title">${shortTitle}</strong>
           <div class="hist-card-meta">
+            ${histCardStatusHtml(view)}
             <span class="hist-card-author">${authorHtml}</span>
             ${durationHtml}
             <span class="hist-card-task-id">#${escapeHtml(String(view.id))}</span>
@@ -1578,6 +1776,28 @@ function createHistoryBlock(view) {
   return block;
 }
 
+let historyRefreshTimer = null;
+
+function historyHasActiveCards() {
+  return !!historyList?.querySelector(".hist-pending, .hist-processing");
+}
+
+function scheduleHistoryAutoRefresh() {
+  if (historyRefreshTimer) return;
+  historyRefreshTimer = setInterval(async () => {
+    if (!historyHasActiveCards()) {
+      clearInterval(historyRefreshTimer);
+      historyRefreshTimer = null;
+      return;
+    }
+    try {
+      await loadHistory();
+    } catch {
+      /* ignore */
+    }
+  }, 4000);
+}
+
 async function loadHistory() {
   try {
     const res = await fetch(`${SUBTITLES_API}?limit=${HISTORY_DISPLAY_LIMIT}`);
@@ -1601,6 +1821,7 @@ async function loadHistory() {
     for (const item of data.items) {
       historyList.appendChild(createHistoryBlock(subtitleToView(item)));
     }
+    if (historyHasActiveCards()) scheduleHistoryAutoRefresh();
   } catch {
     historyList.innerHTML = '<div class="m-empty"><p>加载失败</p></div>';
   }

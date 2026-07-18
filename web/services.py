@@ -201,6 +201,10 @@ def row_to_subtitle(row: dict, *, cached: bool = False, base_url: str = "") -> d
             "raw": raw,
             "corrected": corrected,
         }
+    queue_ahead = db.queue_ahead_count(req_id) if status == "pending" else 0
+    message = "正在提取字幕，请稍后再次请求"
+    if status == "pending" and queue_ahead > 0:
+        message = f"排队中，前面还有 {queue_ahead} 个任务"
     return {
         "ready": False,
         "cached": cached,
@@ -212,9 +216,10 @@ def row_to_subtitle(row: dict, *, cached: bool = False, base_url: str = "") -> d
             "step": step,
             "poll_url": poll,
             "retry_after": 2.0,
-            "message": "正在提取字幕，请稍后再次请求",
+            "message": message,
             "notice": notice if is_resume else "",
             "resume_from": step if is_resume else "",
+            "queue_ahead": queue_ahead,
         },
         "error": None,
         "retry_url": None,

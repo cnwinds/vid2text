@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from douyin_to_text.author_models import AuthorFeedPage, AuthorProfile, FeedVideo
+from douyin_to_text.network import ytdlp_proxy_opts
 from douyin_to_text.url_parser import Platform
 
 logger = logging.getLogger(__name__)
@@ -348,6 +349,7 @@ def _feed_bilibili_ytdlp(
         "extract_flat": "in_playlist",
         "playliststart": max(1, playliststart),
         "playlistend": playlistend,
+        **ytdlp_proxy_opts(),
     }
     cookie_path = None
     if cookies:
@@ -425,6 +427,7 @@ def _feed_youtube(
         "skip_download": True,
         "extract_flat": "in_playlist",
         "playlistend": offset + limit,
+        **ytdlp_proxy_opts(),
     }
     cookie_path = None
     if cookies:

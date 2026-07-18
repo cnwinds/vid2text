@@ -408,22 +408,23 @@ def retry_task(task_id: int, *, fresh: bool = False) -> dict[str, Any] | None:
 
 
 def claim_pending_task() -> dict[str, Any] | None:
-    """原子领取一条 pending 任务。"""
+    """原子领取一条 pending 任务（允许多任务同时 processing，各步骤并发调度）。"""
     with get_conn() as conn:
-        cur = conn.execute(
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
             """
             SELECT id FROM tasks
             WHERE status = 'pending'
             ORDER BY id ASC
             LIMIT 1
             """
-        )
-        row = cur.fetchone()
+        ).fetchone()
         if not row:
+            conn.commit()
             return None
-        task_id = row["id"]
+        task_id = int(row["id"])
         now = _utc_now()
-        conn.execute(
+        cur = conn.execute(
             """
             UPDATE tasks SET status = 'processing', updated_at = ?
             WHERE id = ? AND status = 'pending'
@@ -431,11 +432,39 @@ def claim_pending_task() -> dict[str, Any] | None:
             (now, task_id),
         )
         conn.commit()
+        if cur.rowcount != 1:
+            return None
         cur = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         updated = cur.fetchone()
-        if updated and updated["status"] == "processing":
-            return row_to_dict(updated)
-        return None
+        return row_to_dict(updated) if updated else None
+
+
+def queue_ahead_count(task_id: int) -> int:
+    """该任务前面还有多少条在排队（不含自身）。processing 视为 0。"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            return 0
+        status = row["status"]
+        if status == "processing":
+            return 0
+        if status != "pending":
+            return 0
+        processing = int(
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM tasks WHERE status = 'processing'"
+            ).fetchone()["n"]
+        )
+        ahead_pending = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM tasks
+                WHERE status = 'pending' AND id < ?
+                """,
+                (task_id,),
+            ).fetchone()["n"]
+        )
+        return processing + ahead_pending
 
 
 # ---- settings (KV) ----
