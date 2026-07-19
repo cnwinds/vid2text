@@ -187,7 +187,7 @@ class ResolveNextStepTests(unittest.TestCase):
 
 
 class RunPipelineStepTests(unittest.TestCase):
-    @patch("douyin_to_text.pipeline_steps.download_audio")
+    @patch("douyin_to_text.pipeline_ytdlp_steps.download_audio")
     def test_download_without_prior_parse_step(self, mock_dl: MagicMock) -> None:
         """监控任务：DB 已有 platform/video_id，直接跑 download 不应报错。"""
         with tempfile.TemporaryDirectory() as tmp:
@@ -209,7 +209,7 @@ class RunPipelineStepTests(unittest.TestCase):
             run_pipeline_step(ctx, "download", PipelineOptions(work_dir=work), _noop_progress)
             mock_dl.assert_called_once()
 
-    @patch("douyin_to_text.pipeline_steps.fetch_metadata")
+    @patch("douyin_to_text.pipeline_douyin_steps.fetch_metadata")
     def test_douyin_fetch_meta_without_parse(self, mock_meta: MagicMock) -> None:
         mock_meta.return_value = MagicMock(
             desc="d",

@@ -22,22 +22,21 @@
 - [x] **2.3** SQLite WAL
 - [x] **2.4** Schema 版本化（`schema_version` + `web/db_migrations.py`）
 
-### 阶段 3 — 可维护性（部分）
+### 阶段 3 — 可维护性
 - [x] **3.1** 拆出 `web/db_connection.py`（连接/WAL）
 - [x] **3.2** 拆出 `web/db_migrations.py`
-- [ ] **3.3** 拆分 `pipeline_steps.py` / `author_feed.py`（体量大，留后续 PR）
+- [x] **3.3** 拆分大模块：
+  - `pipeline_douyin_steps.py` / `pipeline_ytdlp_steps.py`
+  - `author_feed_{cookies,bilibili,youtube,douyin}.py`
+  - `db_{common,tasks,settings,monitors}.py`（`db.py` 为 facade）
 
 ### 阶段 4 — 性能与体验
 - [x] **4.1** YouTube 扫描 flat + lazy enrich
+- [x] **4.2** YouTube enrich 并发上限（`YOUTUBE_ENRICH_MAX_CONCURRENT`）+ yt-dlp 全局限流
 - [x] **4.3** 详情弹窗显示评论数
 
 ### 阶段 5 — 测试与观测
 - [x] **5.1** API 冒烟测试（`tests/test_api_v1.py`）
 - [x] **5.2** client_scope 单测
 - [x] **5.3** `GET /metrics` Prometheus 文本指标
-
-## 后续可选
-
-- [ ] 完整拆分 `db.py` / `pipeline_steps.py` / `author_feed.py`
-- [ ] YouTube enrich 并发上限与限流
-- [ ] 结构化 JSON 日志
+- [x] **5.4** 结构化 JSON 日志（`LOG_FORMAT=json`）

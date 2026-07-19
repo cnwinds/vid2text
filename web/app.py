@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
@@ -27,12 +27,10 @@ from web.api_v1 import router as v1_router
 from web.monitor_scanner import start_monitor_scanner, stop_monitor_scanner
 from web.metrics import metrics_text
 from web.step_scheduler import is_scheduler_running
+from web.logging_config import configure_logging
 from web.worker import start_worker, stop_worker
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
