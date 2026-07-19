@@ -57,17 +57,37 @@ uvicorn web.app:app --host 127.0.0.1 --port 8000
 ### 架构
 
 ```
-用户浏览器
+用户浏览器 / API 客户端
     │
     ▼
 FastAPI (web/app.py)
     ├── SQLite (data/vid2text.db)
-    └── 后台 Worker 线程 (web/worker.py)
-            └── douyin_to_text/pipeline.py
-                    ├── url_parser / video_fetcher / yt_dlp_fetcher
-                    ├── stt_engine.py      ← STT 引擎可切换
-                    └── postprocess.py       ← 转录后处理（预留）
+    ├── step_scheduler (web/step_scheduler.py) — 按资源池并发调度 pipeline 步骤
+    │       ├── download 池 — 视频下载
+    │       ├── stt 池 — 语音转录
+    │       ├── correct 池 — LLM 后处理
+    │       └── default 池 — parse / fetch_meta / fetch_subtitle 等
+    ├── monitor_scanner (web/monitor_scanner.py) — 账号监控后台扫描线程
+    │       └── Monitors API (`/api/v1/monitors`，见 web/api_monitors.py)
+    └── douyin_to_text/pipeline.py
+            ├── url_parser / video_fetcher / yt_dlp_fetcher
+            ├── stt_engine.py      ← STT 引擎可切换
+            └── postprocess.py       ← 转录后处理（预留）
 ```
+
+`GET /health` 返回服务、数据库与调度器状态（无需鉴权）。
+
+### 环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `ADMIN_PASSWORD` | Web 管理页登录密码（`/monitors`、`/settings`） |
+| `ADMIN_API_TOKEN` | Monitors / Settings API 鉴权（`Authorization: Bearer …` 或 `X-Admin-Token`） |
+| `PUBLIC_API_TOKEN` | （可选）字幕 API 鉴权；设置后 `POST/GET /api/v1/subtitles*` 需 `Bearer` 或 `X-Api-Token` |
+| `WORK_CACHE_QUOTA_GB` | work 缓存目录磁盘配额（GB），超限按最旧文件清理 |
+| `STEP_CONCURRENCY_JSON` | 资源池并发 JSON，如 `{"download":1,"stt":1,"correct":1,"default":1}`；也可用 `STEP_<POOL>_CONCURRENCY` 单独设置 |
+
+详见 `.env.example`。
 
 ### 数据表 `tasks`
 
@@ -119,9 +139,13 @@ vid2text/
 │   ├── pipeline.py          # Web/Worker 复用 pipeline
 │   └── cli.py               # CLI 入口
 ├── web/                     # Web 应用
-│   ├── app.py               # FastAPI 路由
+│   ├── app.py               # FastAPI 路由 + lifespan
 │   ├── db.py                # SQLite
-│   ├── worker.py            # 后台任务
+│   ├── worker.py            # 启动/停止 step_scheduler
+│   ├── step_scheduler.py    # 按资源池并发调度 pipeline 步骤
+│   ├── monitor_scanner.py   # 账号监控后台扫描
+│   ├── api_monitors.py      # Monitors / Settings API
+│   ├── api_v1.py            # 字幕 REST API
 │   ├── schemas.py           # Pydantic 模型
 │   ├── templates/index.html
 │   └── static/
@@ -157,7 +181,7 @@ transcribe(audio_path, engine="whisper"|"faster-whisper", language="zh", model="
 2. **B站字幕** — 多数 CC/AI 字幕需 Cookie 登录态
 3. **YouTube** — 部分语言字幕可能 429；可换语言或稍后重试
 4. **STT 耗时** — 长视频 CPU 转录较慢；有字幕时优先走字幕接口
-5. **Web Worker** — 单线程轮询，适合本地 MVP；生产环境可换 Celery/RQ
+5. **并发调度** — `step_scheduler` 按资源池限流（默认各池并发 1）；高负载可调 `STEP_CONCURRENCY_JSON` 或换外部队列
 
 ---
 

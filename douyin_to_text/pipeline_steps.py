@@ -84,8 +84,7 @@ def _step_output_ready(
         has_title = bool((task.get("title") or ctx.title or "").strip())
         if platform in ("youtube", "bilibili"):
             has_pub = bool((task.get("published_at") or ctx.published_at or "").strip())
-            has_like = int(task.get("like_count") or ctx.like_count or 0) > 0
-            return has_title and has_pub and has_like
+            return has_title and has_pub
         return has_title
     if step == "fetch_subtitle":
         if (task.get("raw_transcript") or ctx.raw_transcript or "").strip():
@@ -436,11 +435,7 @@ def _run_ytdlp_step(
     ctx.artifacts = artifacts
 
     if step == "fetch_meta":
-        if (
-            ctx.title
-            and (ctx.published_at or "").strip()
-            and int(ctx.like_count or 0) > 0
-        ):
+        if ctx.title and (ctx.published_at or "").strip():
             ctx.tel.title = ctx.title
             emit_progress(
                 prog,

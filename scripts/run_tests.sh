@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pipeline 步骤逻辑单元测试（无网络）
+# 单元测试（无网络，覆盖 tests/ 下全部 test_*.py）
 set -euo pipefail
 cd "$(dirname "$0")/.."
-python -m unittest tests.test_pipeline_steps -v "$@"
+python -m unittest discover -s tests -p 'test_*.py' -v "$@"

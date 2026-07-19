@@ -6,10 +6,11 @@ import asyncio
 import time
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 
 from web import db
+from web.api_auth import require_public_api_auth
 from web.api_docs import (
     ERROR_RESPONSES,
     GET_LIST_RESPONSES,
@@ -49,7 +50,11 @@ from web.services import (
 from web.rate_limit import RateLimitError, get_client_ip
 from web.work_cache import work_cache_public, clear_video_cache
 
-router = APIRouter(prefix="/api/v1", tags=["v1"])
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["v1"],
+    dependencies=[Depends(require_public_api_auth)],
+)
 
 
 def _base_url(request: Request) -> str:

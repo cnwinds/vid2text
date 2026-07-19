@@ -10,6 +10,7 @@ from douyin_to_text.author_feed import collect_feed_videos
 from douyin_to_text.author_models import AuthorProfile
 from douyin_to_text.author_resolver import resolve_author_from_url
 from web import db
+from web.metadata_sync import sync_task_to_monitor_video
 
 logger = logging.getLogger(__name__)
 
@@ -149,11 +150,14 @@ def _sync_video_metadata(monitor: dict[str, Any], video, *, task_id: int | None)
     )
     if task_id:
         task = db.get_task(task_id) or {}
-        db.sync_monitor_video_engagement(
-            str(monitor["platform"]),
-            str(video.video_id),
-            published_at=str(published_at or task.get("published_at") or ""),
-            like_count=int(like_count or task.get("like_count") or 0),
+        sync_task_to_monitor_video(
+            {
+                **task,
+                "platform": monitor["platform"],
+                "video_id": video.video_id,
+                "published_at": published_at or task.get("published_at") or "",
+                "like_count": max(int(like_count), int(task.get("like_count") or 0)),
+            },
             comment_count=int(comment_count),
             play_count=int(play_count),
         )

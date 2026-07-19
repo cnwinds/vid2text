@@ -338,3 +338,7 @@ def stop_scheduler() -> None:
         return
     _scheduler.stop()
     _scheduler = None
+
+
+def is_scheduler_running() -> bool:
+    return _scheduler is not None

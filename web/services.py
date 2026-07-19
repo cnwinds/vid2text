@@ -11,6 +11,7 @@ from typing import Any
 from douyin_to_text.pipeline import _download_url_from_ytdlp_info
 from douyin_to_text.pipeline_resume import find_douyin_artifacts
 from douyin_to_text.url_parser import parse_video_url, resolve_short_url
+from douyin_to_text.url_safety import UnsafeUrlError, assert_safe_http_url
 from douyin_to_text.yt_dlp_fetcher import download_video as ytdlp_download_video
 from douyin_to_text.yt_dlp_fetcher import extract_info
 from web import db
@@ -67,8 +68,13 @@ def enrich_task_duration(row: dict | None, *, persist: bool = False) -> dict | N
 
 def resolve_and_parse(url: str):
     url = url.strip()
+    try:
+        assert_safe_http_url(url)
+    except UnsafeUrlError as exc:
+        raise ValueError(str(exc)) from exc
     if any(x in url for x in ("v.douyin.com", "b23.tv")):
         url = resolve_short_url(url)
+        assert_safe_http_url(url)
     return parse_video_url(url)
 
 

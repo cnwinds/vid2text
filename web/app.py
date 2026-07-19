@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -23,13 +24,15 @@ from web.auth import (
 )
 from web.api_monitors import router as monitors_router
 from web.api_v1 import router as v1_router
-from web.monitor_scanner import start_monitor_scanner
-from web.worker import start_worker
+from web.monitor_scanner import start_monitor_scanner, stop_monitor_scanner
+from web.step_scheduler import is_scheduler_running
+from web.worker import start_worker, stop_worker
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -48,10 +51,21 @@ def static_version() -> str:
 templates.env.globals["static_v"] = static_version
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init_db()
+    start_worker()
+    start_monitor_scanner()
+    yield
+    stop_worker()
+    stop_monitor_scanner()
+
+
 app = FastAPI(
     title="vid2text",
     description="视频 URL 转文字 · 获取字幕见 /api/v1/subtitles · 账号监控见 /api/v1/monitors",
     version="0.5.0",
+    lifespan=lifespan,
 )
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -59,11 +73,23 @@ app.include_router(v1_router)
 app.include_router(monitors_router)
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    db.init_db()
-    start_worker()
-    start_monitor_scanner()
+@app.get("/health")
+async def health() -> JSONResponse:
+    db_status = "ok"
+    try:
+        db.count_tasks()
+    except Exception:
+        logger.exception("health: db check failed")
+        db_status = "error"
+
+    scheduler_status = "running" if is_scheduler_running() else "stopped"
+    all_ok = db_status == "ok" and scheduler_status == "running"
+    body = {
+        "status": "ok" if all_ok else "degraded",
+        "db": db_status,
+        "scheduler": scheduler_status,
+    }
+    return JSONResponse(status_code=200 if all_ok else 503, content=body)
 
 
 @app.get("/", response_class=HTMLResponse)

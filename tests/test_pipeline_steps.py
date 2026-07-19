@@ -79,12 +79,11 @@ class ResolveStepTests(unittest.TestCase):
             "video_id": "abc",
             "title": "Hello",
             "published_at": "2024-01-01T00:00:00+00:00",
-            "like_count": 10,
             "progress_step": "fetch_meta",
         }
         self.assertEqual(resolve_step_to_run(task, PipelineOptions()), "fetch_subtitle")
 
-    def test_youtube_title_without_engagement_stays_fetch_meta(self) -> None:
+    def test_youtube_title_without_published_at_stays_fetch_meta(self) -> None:
         task = {
             "id": 3,
             "video_url": "https://youtube.com/watch?v=abc",
@@ -95,6 +94,19 @@ class ResolveStepTests(unittest.TestCase):
         }
         self.assertEqual(resolve_step_to_run(task, PipelineOptions()), "fetch_meta")
 
+    def test_youtube_title_with_published_at_zero_likes_goes_fetch_subtitle(self) -> None:
+        task = {
+            "id": 9,
+            "video_url": "https://youtube.com/watch?v=abc",
+            "platform": "youtube",
+            "video_id": "abc",
+            "title": "Hello",
+            "published_at": "2024-01-01T00:00:00+00:00",
+            "like_count": 0,
+            "progress_step": "fetch_meta",
+        }
+        self.assertEqual(resolve_step_to_run(task, PipelineOptions()), "fetch_subtitle")
+
     def test_fetch_subtitle_not_skipped_after_fetch_meta(self) -> None:
         task = {
             "id": 7,
@@ -103,7 +115,6 @@ class ResolveStepTests(unittest.TestCase):
             "video_id": "abc",
             "title": "T",
             "published_at": "2024-01-01T00:00:00+00:00",
-            "like_count": 5,
             "progress_step": "fetch_meta",
         }
         self.assertEqual(resolve_step_to_run(task, PipelineOptions()), "fetch_subtitle")
@@ -116,7 +127,6 @@ class ResolveStepTests(unittest.TestCase):
             "video_id": "abc",
             "title": "T",
             "published_at": "2024-01-01T00:00:00+00:00",
-            "like_count": 1,
             "progress_step": "fetch_subtitle",
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,7 +141,6 @@ class ResolveStepTests(unittest.TestCase):
                 "video_id": "abc",
                 "title": "Hello",
                 "published_at": "2024-01-01T00:00:00+00:00",
-                "like_count": 1,
                 "progress_step": "stt",
             }
             opts = PipelineOptions(work_dir=work)
@@ -145,7 +154,6 @@ class ResolveStepTests(unittest.TestCase):
             "video_id": "abc",
             "title": "Hello",
             "published_at": "2024-01-01T00:00:00+00:00",
-            "like_count": 1,
             "progress_step": "stt",
             "raw_transcript": "已有文稿",
         }

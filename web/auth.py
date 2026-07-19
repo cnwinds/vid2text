@@ -30,7 +30,11 @@ def admin_password() -> str:
 
 
 def _session_secret() -> bytes:
-    raw = admin_api_token() or admin_password() or "vid2text-dev-insecure"
+    raw = admin_api_token() or admin_password()
+    if not raw:
+        raise RuntimeError(
+            "未配置 ADMIN_API_TOKEN 或 ADMIN_PASSWORD，无法签发管理 Session"
+        )
     return hashlib.sha256(raw.encode()).digest()
 
 

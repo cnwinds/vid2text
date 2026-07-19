@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from web import db
+from web.metadata_sync import sync_task_to_monitor_video
 from douyin_to_text.pipeline_resume import step_index
 
 _TASK_EXTRA_KEYS = (
@@ -76,15 +77,8 @@ class TaskProgressReporter:
                 db.update_task(self.task_id, **task_extras)
             if task_extras or engagement_extras:
                 task = db.get_task(self.task_id) or {}
-                db.sync_monitor_video_engagement(
-                    str(task.get("platform") or ""),
-                    str(task.get("video_id") or ""),
-                    published_at=str(
-                        task_extras.get("published_at") or task.get("published_at") or ""
-                    ),
-                    like_count=int(
-                        task_extras.get("like_count") or task.get("like_count") or 0
-                    ),
+                sync_task_to_monitor_video(
+                    {**task, **task_extras},
                     comment_count=int(engagement_extras.get("comment_count") or 0),
                     play_count=int(engagement_extras.get("play_count") or 0),
                 )
@@ -102,15 +96,8 @@ class TaskProgressReporter:
             db.update_task(self.task_id, **fields)
             if task_extras or engagement_extras:
                 task = db.get_task(self.task_id) or {}
-                db.sync_monitor_video_engagement(
-                    str(task.get("platform") or ""),
-                    str(task.get("video_id") or ""),
-                    published_at=str(
-                        task_extras.get("published_at") or task.get("published_at") or ""
-                    ),
-                    like_count=int(
-                        task_extras.get("like_count") or task.get("like_count") or 0
-                    ),
+                sync_task_to_monitor_video(
+                    {**task, **task_extras},
                     comment_count=int(engagement_extras.get("comment_count") or 0),
                     play_count=int(engagement_extras.get("play_count") or 0),
                 )
