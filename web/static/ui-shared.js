@@ -1,5 +1,22 @@
 /** 监控页 / 历史记录共用的平台标识与状态点 */
 
+function miniBurst(x, y, rgb = "70,224,201") {
+  for (let i = 0; i < 9; i++) {
+    const s = document.createElement("span");
+    s.className = "spark";
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 18 + Math.random() * 26;
+    s.style.setProperty("--dx", Math.cos(angle) * dist + "px");
+    s.style.setProperty("--dy", Math.sin(angle) * dist + "px");
+    s.style.left = x + "px";
+    s.style.top = y + "px";
+    s.style.background = `rgba(${rgb},0.9)`;
+    s.style.boxShadow = `0 0 6px rgba(${rgb},0.8)`;
+    document.body.appendChild(s);
+    setTimeout(() => s.remove(), 650);
+  }
+}
+
 function uiEscapeHtml(str) {
   return String(str)
     .replace(/&/g, "&amp;")
@@ -143,6 +160,18 @@ function taskPublishedLabel(task) {
   return fmtPublishedAt(task?.published_at);
 }
 
+function fmtEngagementCount(n) {
+  const v = Number(n) || 0;
+  if (v <= 0) return "";
+  if (v >= 10000) return `${(v / 10000).toFixed(1)}万`;
+  if (v >= 1000) return `${(v / 1000).toFixed(1)}k`;
+  return String(v);
+}
+
+function taskLikeLabel(task) {
+  return fmtEngagementCount(task?.like_count);
+}
+
 /** 监控作品条目 → 与历史卡片共用的 view 结构 */
 function monitorVideoToView(video, monitor) {
   const hasTask = Boolean(video?.task_id);
@@ -158,6 +187,8 @@ function monitorVideoToView(video, monitor) {
     author_name: video?.task_author_name || monitor?.author_name || "",
     avatar_url: video?.task_avatar_url || monitor?.avatar_url || "",
     duration_sec: Number(video?.task_duration_sec) || 0,
+    published_at: video?.published_at || "",
+    like_count: Number(video?.like_count) || 0,
     progress_step: video?.task_progress_step || "",
     progress_metrics: metrics,
     queue_ahead: Number(video?.task_queue_ahead) || 0,

@@ -52,9 +52,9 @@ def _stats_from_aweme(aweme: dict[str, Any]) -> tuple[int, int, int, int, int]:
 
 
 def _stats_from_yt_ent(ent: dict[str, Any]) -> tuple[int, int, int, int, int]:
-    like = int(ent.get("like_count") or 0)
-    comment = int(ent.get("comment_count") or 0)
-    play = int(ent.get("view_count") or 0)
+    from douyin_to_text.pipeline_helpers import engagement_from_ytdlp_info
+
+    like, comment, play = engagement_from_ytdlp_info(ent)
     return like, comment, play, 0, 0
 
 _BILI_HEADERS = {
@@ -159,6 +159,39 @@ def write_cookiefile(cookie_str: str, domain: str = ".youtube.com") -> Path | No
             )
     tmp.close()
     return Path(tmp.name)
+
+
+def _fetch_youtube_tab_info(
+    tab: str,
+    *,
+    cookies: str | None,
+    playlistend: int | None = None,
+    flat: bool = True,
+) -> dict[str, Any]:
+    """拉取 YouTube 频道 /videos 页元数据（名称、头像、作品列表）。"""
+    import yt_dlp
+
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        **ytdlp_proxy_opts(),
+    }
+    if flat:
+        opts["extract_flat"] = "in_playlist"
+    if playlistend is not None:
+        opts["playlistend"] = max(1, int(playlistend))
+    cookie_path = None
+    if cookies:
+        cookie_path = write_cookiefile(cookies)
+        if cookie_path:
+            opts["cookiefile"] = str(cookie_path)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(tab, download=False) or {}
+    finally:
+        if cookie_path:
+            cookie_path.unlink(missing_ok=True)
 
 
 def fetch_author_feed(
@@ -410,7 +443,7 @@ def _feed_youtube(
     limit: int,
     cookies: str | None,
 ) -> AuthorFeedPage:
-    import yt_dlp
+    from douyin_to_text.pipeline_helpers import avatar_from_ytdlp_info, published_at_from_ytdlp_info
 
     # cursor = offset index as string
     offset = int(cursor) if cursor.isdigit() else 0
@@ -421,26 +454,9 @@ def _feed_youtube(
         else:
             tab = f"https://www.youtube.com/channel/{author.author_key}/videos"
 
-    opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "extract_flat": "in_playlist",
-        "playlistend": offset + limit,
-        **ytdlp_proxy_opts(),
-    }
-    cookie_path = None
-    if cookies:
-        cookie_path = write_cookiefile(cookies)
-        if cookie_path:
-            opts["cookiefile"] = str(cookie_path)
-
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(tab, download=False) or {}
-    finally:
-        if cookie_path:
-            cookie_path.unlink(missing_ok=True)
+    info = _fetch_youtube_tab_info(
+        tab, cookies=cookies, playlistend=offset + limit, flat=False
+    )
 
     entries = list(info.get("entries") or [])
     slice_entries = entries[offset : offset + limit]
@@ -464,6 +480,8 @@ def _feed_youtube(
                 pub = datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
             except Exception:
                 pub = str(ts)
+        if not pub:
+            pub = published_at_from_ytdlp_info(ent)
         like, comment, play, share, collect = _stats_from_yt_ent(ent)
         videos.append(
             FeedVideo(
@@ -482,6 +500,9 @@ def _feed_youtube(
     name = str(info.get("channel") or info.get("uploader") or author.author_name)
     if name:
         author.author_name = name
+    avatar = avatar_from_ytdlp_info(info)
+    if avatar:
+        author.avatar_url = avatar
     next_offset = offset + len(videos)
     # flat 列表若还能取到满页，认为可能还有更多
     has_more = len(videos) >= limit

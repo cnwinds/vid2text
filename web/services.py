@@ -98,6 +98,28 @@ def check_ip_rate_limit(client_ip: str, *, exclude_id: int | None = None) -> Non
     _ensure_ip_slot(client_ip, exclude_id=exclude_id)
 
 
+_MEDIA_FAILURE_MARKERS = (
+    "peer closed",
+    "message body",
+    "download",
+    "ffmpeg",
+    "mp4",
+    "不完整",
+    "transport",
+    "connection reset",
+    "timed out",
+)
+
+
+def task_needs_media_cache_clear(task: dict) -> bool:
+    """下载/转码类失败：重试前应清除不完整本地缓存。"""
+    step = (task.get("progress_step") or "").strip()
+    if step in ("download", "extract_audio"):
+        return True
+    err = (task.get("error_message") or "").lower()
+    return any(m in err for m in _MEDIA_FAILURE_MARKERS)
+
+
 def submit_url(url: str, client_ip: str = "") -> tuple[dict, bool]:
     """提交视频 URL，返回 (task_row, cached)。"""
     parsed = resolve_and_parse(url)
@@ -154,6 +176,7 @@ def row_to_subtitle(row: dict, *, cached: bool = False, base_url: str = "") -> d
         "download_url": row.get("download_url") or "",
         "duration_sec": duration_sec,
         "published_at": row.get("published_at") or "",
+        "like_count": int(row.get("like_count") or 0),
     }
 
     if status == "done" and (corrected or raw):

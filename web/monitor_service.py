@@ -124,20 +124,39 @@ def create_monitor_from_url(
 
 def _sync_video_metadata(monitor: dict[str, Any], video, *, task_id: int | None) -> None:
     """写入/更新作品元数据（含互动统计），不改变入队逻辑。"""
+    published_at = video.published_at
+    like_count = getattr(video, "like_count", 0) or 0
+    comment_count = getattr(video, "comment_count", 0) or 0
+    play_count = getattr(video, "play_count", 0) or 0
+    if task_id:
+        task = db.get_task(task_id) or {}
+        if not (published_at or "").strip():
+            published_at = (task.get("published_at") or "").strip()
+        like_count = max(int(like_count), int(task.get("like_count") or 0))
     db.upsert_monitor_video(
         monitor_id=monitor["id"],
         platform=monitor["platform"],
         video_id=video.video_id,
         video_url=video.url,
         title=video.title,
-        published_at=video.published_at,
-        like_count=getattr(video, "like_count", 0) or 0,
-        comment_count=getattr(video, "comment_count", 0) or 0,
-        play_count=getattr(video, "play_count", 0) or 0,
+        published_at=published_at,
+        like_count=like_count,
+        comment_count=comment_count,
+        play_count=play_count,
         share_count=getattr(video, "share_count", 0) or 0,
         collect_count=getattr(video, "collect_count", 0) or 0,
         task_id=task_id,
     )
+    if task_id:
+        task = db.get_task(task_id) or {}
+        db.sync_monitor_video_engagement(
+            str(monitor["platform"]),
+            str(video.video_id),
+            published_at=str(published_at or task.get("published_at") or ""),
+            like_count=int(like_count or task.get("like_count") or 0),
+            comment_count=int(comment_count),
+            play_count=int(play_count),
+        )
 
 
 def _enqueue_video(monitor: dict[str, Any], video) -> int | None:
@@ -247,6 +266,10 @@ def scan_monitor(monitor_id: int) -> dict[str, Any]:
     for video in videos:
         seen = db.get_monitor_video(monitor["platform"], video.video_id)
         existing_task_id = seen.get("task_id") if seen else None
+        if not existing_task_id:
+            linked = db.find_by_platform_video(monitor["platform"], video.video_id)
+            if linked:
+                existing_task_id = linked["id"]
 
         # 每次扫描都刷新列表里作品的标题、发布时间、点赞/评论/播放
         _sync_video_metadata(monitor, video, task_id=existing_task_id)

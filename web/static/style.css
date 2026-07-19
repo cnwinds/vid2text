@@ -3230,6 +3230,19 @@ body.m-modal-open {
   opacity: 0.5;
 }
 
+.td-hero-like {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  color: var(--text-mid);
+}
+
+.td-hero-like::before {
+  content: "·";
+  margin: 0 8px;
+  opacity: 0.5;
+}
+
 .td-hero-duration {
   font-family: var(--mono);
   font-size: 12px;
@@ -3727,7 +3740,17 @@ body.m-modal-open {
   color: var(--text-mid);
 }
 
-.hist-card-duration::before {
+.hist-card-published,
+.hist-card-like {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--text-mid);
+}
+
+.hist-card-duration::before,
+.hist-card-published::before,
+.hist-card-like::before {
   content: "·";
   margin-right: 10px;
   opacity: 0.5;

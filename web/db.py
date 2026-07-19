@@ -80,6 +80,14 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE tasks ADD COLUMN duration_sec REAL NOT NULL DEFAULT 0"
             )
+        if "published_at" not in cols:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN published_at TEXT NOT NULL DEFAULT ''"
+            )
+        if "like_count" not in cols:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN like_count INTEGER NOT NULL DEFAULT 0"
+            )
 
         mv_cols = {
             r[1] for r in conn.execute("PRAGMA table_info(monitor_videos)").fetchall()
@@ -191,7 +199,7 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 _TASK_WITH_MONITOR = """
     SELECT t.*, m.author_name AS monitor_author_name, m.avatar_url AS monitor_avatar_url,
-           mv.published_at AS video_published_at
+           mv.published_at AS video_published_at, mv.like_count AS video_like_count
     FROM tasks t
     LEFT JOIN monitors m ON t.monitor_id = m.id
     LEFT JOIN monitor_videos mv ON mv.task_id = t.id
@@ -210,10 +218,15 @@ def enrich_task_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
     else:
         row.pop("monitor_avatar_url", None)
     pub = (row.pop("video_published_at", None) or "").strip()
-    if pub:
+    if not (row.get("published_at") or "").strip() and pub:
         row["published_at"] = pub
     elif "published_at" not in row:
         row["published_at"] = ""
+    mv_like = int(row.pop("video_like_count", 0) or 0)
+    if int(row.get("like_count") or 0) <= 0 and mv_like > 0:
+        row["like_count"] = mv_like
+    else:
+        row["like_count"] = int(row.get("like_count") or 0)
     return row
 
 
@@ -235,6 +248,47 @@ def get_task(task_id: int) -> dict[str, Any] | None:
         )
         row = cur.fetchone()
         return enrich_task_row(row_to_dict(row)) if row else None
+
+
+def sync_monitor_video_engagement(
+    platform: str,
+    video_id: str,
+    *,
+    published_at: str = "",
+    like_count: int = 0,
+    comment_count: int = 0,
+    play_count: int = 0,
+) -> None:
+    """任务 fetch_meta 后回写监控作品表的发布时间与互动数据。"""
+    plat = (platform or "").strip()
+    vid = (video_id or "").strip()
+    if not plat or not vid:
+        return
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, published_at, like_count FROM monitor_videos WHERE platform = ? AND video_id = ?",
+            (plat, vid),
+        ).fetchone()
+        if not row:
+            return
+        fields: dict[str, Any] = {}
+        pub = (published_at or "").strip()
+        if pub:
+            fields["published_at"] = pub
+        if int(like_count or 0) > 0:
+            fields["like_count"] = int(like_count)
+        if int(comment_count or 0) > 0:
+            fields["comment_count"] = int(comment_count)
+        if int(play_count or 0) > 0:
+            fields["play_count"] = int(play_count)
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        conn.execute(
+            f"UPDATE monitor_videos SET {cols} WHERE id = ?",
+            [*fields.values(), row["id"]],
+        )
+        conn.commit()
 
 
 def create_task(
@@ -411,6 +465,24 @@ def retry_task(task_id: int, *, fresh: bool = False) -> dict[str, Any] | None:
         status="pending",
         error_message="",
         corrected_transcript="",
+    )
+
+
+def restart_media_extraction(task_id: int) -> dict[str, Any] | None:
+    """多媒体步骤失败/卡住后重试：保留元数据，从下载阶段重新排队。"""
+    task = get_task(task_id)
+    if not task:
+        return None
+    if task["status"] not in ("failed", "processing", "pending"):
+        return None
+    resume = "fetch_subtitle" if (task.get("title") or "").strip() else ""
+    return update_task(
+        task_id,
+        status="pending",
+        error_message="",
+        corrected_transcript="",
+        progress_step=resume,
+        progress_metrics="{}",
     )
 
 
@@ -691,11 +763,16 @@ def upsert_monitor_video(
                 fields["title"] = title
             if published_at:
                 fields["published_at"] = published_at
-            fields["like_count"] = int(like_count or 0)
-            fields["comment_count"] = int(comment_count or 0)
-            fields["play_count"] = int(play_count or 0)
-            fields["share_count"] = int(share_count or 0)
-            fields["collect_count"] = int(collect_count or 0)
+            if int(like_count or 0) > 0:
+                fields["like_count"] = int(like_count)
+            if int(comment_count or 0) > 0:
+                fields["comment_count"] = int(comment_count)
+            if int(play_count or 0) > 0:
+                fields["play_count"] = int(play_count)
+            if int(share_count or 0) > 0:
+                fields["share_count"] = int(share_count)
+            if int(collect_count or 0) > 0:
+                fields["collect_count"] = int(collect_count)
             if task_id is not None:
                 fields["task_id"] = task_id
             if fields:
@@ -740,6 +817,19 @@ def upsert_monitor_video(
         return row_to_dict(row)
 
 
+def _enrich_monitor_video_row(row: dict[str, Any]) -> dict[str, Any]:
+    """列表展示时合并任务表已有元数据（扫描 flat 列表可能缺点赞/日期）。"""
+    task_pub = (row.pop("task_published_at", None) or "").strip()
+    if not (row.get("published_at") or "").strip() and task_pub:
+        row["published_at"] = task_pub
+    task_like = int(row.pop("task_like_count", 0) or 0)
+    if int(row.get("like_count") or 0) <= 0 and task_like > 0:
+        row["like_count"] = task_like
+    row.pop("task_comment_count", None)
+    row.pop("task_play_count", None)
+    return row
+
+
 def list_monitor_videos(
     monitor_id: int, *, limit: int = 50, offset: int = 0
 ) -> list[dict[str, Any]]:
@@ -753,18 +843,20 @@ def list_monitor_videos(
                    t.progress_metrics AS task_progress_metrics,
                    t.author_name AS task_author_name,
                    t.avatar_url AS task_avatar_url,
-                   t.duration_sec AS task_duration_sec
+                   t.duration_sec AS task_duration_sec,
+                   t.published_at AS task_published_at,
+                   t.like_count AS task_like_count
             FROM monitor_videos mv
             LEFT JOIN tasks t ON t.id = mv.task_id
             WHERE mv.monitor_id = ?
             ORDER BY
-              COALESCE(NULLIF(mv.published_at, ''), mv.discovered_at) DESC,
+              COALESCE(NULLIF(mv.published_at, ''), t.published_at, mv.discovered_at) DESC,
               mv.id DESC
             LIMIT ? OFFSET ?
             """,
             (monitor_id, limit, offset),
         )
-        return [row_to_dict(r) for r in cur.fetchall()]
+        return [_enrich_monitor_video_row(row_to_dict(r)) for r in cur.fetchall()]
 
 
 def count_monitor_videos(monitor_id: int) -> int:

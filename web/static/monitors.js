@@ -224,6 +224,7 @@ function videoListSnapshot(items) {
       task_status: v.task_status,
       task_progress_step: v.task_progress_step,
       task_error: v.task_error,
+      published_at: v.published_at,
       like_count: v.like_count,
       comment_count: v.comment_count,
       play_count: v.play_count,
@@ -532,7 +533,7 @@ async function handleMonitorAction(m, act, block) {
     return;
   }
   if (act === "scan") {
-    const btn = block?.querySelector('[data-act="scan"], [data-act="scan-quick"]');
+    const btn = block?.querySelector('[data-act="scan"]');
     btn?.classList.add("is-busy");
     showStatus("正在扫描…");
     try {
@@ -580,7 +581,7 @@ function createMonitorBlock(m) {
         </span>
         <span class="m-chevron" aria-hidden="true"></span>
       </button>
-      <button type="button" class="m-btn m-btn-icon m-quick-scan" data-act="scan-quick" title="立即扫描">
+      <button type="button" class="m-btn m-btn-icon m-refresh-videos" data-act="refresh-videos" title="刷新列表">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.36M21 3v6h-6"/></svg>
       </button>
     </div>
@@ -624,9 +625,19 @@ function createMonitorBlock(m) {
     });
   });
 
-  block.querySelector('[data-act="scan-quick"]')?.addEventListener("click", (e) => {
+  block.querySelector('[data-act="refresh-videos"]')?.addEventListener("click", async (e) => {
     e.stopPropagation();
-    handleMonitorAction(m, "scan", block).catch((err) => showStatus(err.message, true));
+    if (!expandedIds.has(m.id)) {
+      expandedIds.add(m.id);
+      setCardOpen(block, true);
+    }
+    showStatus("正在刷新列表…");
+    try {
+      await refreshVideosInBlock(m.id, block, m);
+      showStatus("列表已刷新");
+    } catch (err) {
+      showStatus(err.message || "刷新失败", true);
+    }
   });
 
   const rulesForm = block.querySelector(".m-rules");
@@ -773,6 +784,7 @@ if (window.Vid2TaskModal) {
         if (block) refreshVideosInBlock(id, block, block._monitorMeta, { silent: true });
       }
     },
+    onPoll: () => {},
     setSubmitDisabled: () => {},
   });
   Vid2TaskModal.init();

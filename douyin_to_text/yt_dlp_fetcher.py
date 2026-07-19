@@ -290,12 +290,18 @@ def download_audio(
 
     info = run_ytdlp(url, _do)
     vid = info.get("id") or "audio"
-    if wav.exists():
-        return wav
-
-    # Re-encode to 16kHz mono for Whisper
     out_wav = work_dir / f"{vid}_16k.wav"
-    src = wav if wav.exists() else next(work_dir.glob(f"{vid}.*"))
+    if out_wav.exists() and out_wav.stat().st_size > 0:
+        return out_wav
+
+    wav = work_dir / f"{vid}.wav"
+    if wav.exists():
+        src = wav
+    else:
+        matches = sorted(work_dir.glob(f"{vid}.*"))
+        if not matches:
+            raise RuntimeError(f"yt-dlp 未生成音频文件: {vid}")
+        src = matches[0]
 
     def _reencode() -> Path:
         subprocess.run(

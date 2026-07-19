@@ -1,223 +1,14 @@
+/** 主页：提交表单 + 历史记录（详情弹窗见 task-modal.js） */
 const form = document.getElementById("submit-form");
 const urlInput = document.getElementById("url-input");
 const submitBtn = document.getElementById("submit-btn");
 const statusMsg = document.getElementById("status-msg");
-const taskModal = document.getElementById("task-modal");
-const taskModalBody = document.getElementById("task-modal-body");
-const taskModalFoot = document.getElementById("task-modal-foot");
-const taskModalTitle = document.getElementById("task-modal-title");
 const historyList = document.getElementById("history-list");
 const refreshHistoryBtn = document.getElementById("refresh-history");
 
-let pollTimer = null;
-/** 结果区当前展示的任务 */
-let viewingTaskId = null;
-/** 后台轮询中的任务（可与 viewing 不同） */
-let pollingTaskId = null;
-/** @deprecated 兼容重试按钮，等同 viewingTaskId */
-let currentTaskId = null;
-let procAnim = null;
-let procAnimTaskId = null;
-let progressHighWater = { taskId: null, pct: 0, stageIdx: -1 };
-let animStageIdx = 0;
-let metricTarget = { activity: 0.15, cpu: 0, network_kbps: 0, kind: "idle", detail: "" };
-let metricDisplay = { activity: 0.15, cpu: 0, network_kbps: 0, kind: "idle", detail: "" };
-/** 各步骤下方展示的速度/大小等缓存 */
-let stageMetaCache = {};
-
-const PIPELINE_STEPS = [
-  { key: "parse", label: "解析链接" },
-  { key: "fetch_meta", label: "获取视频信息" },
-  { key: "fetch_subtitle", label: "获取平台字幕" },
-  { key: "download", label: "下载视频" },
-  { key: "extract_audio", label: "提取音轨" },
-  { key: "stt", label: "语音识别" },
-  { key: "correct", label: "文本修正" },
-];
-
-const STEP_INDEX = Object.fromEntries(PIPELINE_STEPS.map((s, i) => [s.key, i]));
-
-function taskIsActive(status) {
-  return status === "pending" || status === "processing";
-}
-
-function getProcElements() {
-  const panel = taskModalBody?.querySelector(".task-proc-panel");
-  if (!panel) return null;
-  return {
-    panel,
-    canvas: panel.querySelector(".proc-canvas"),
-    progFill: panel.querySelector(".progress-fill"),
-    progPct: panel.querySelector(".progress-bar-pct"),
-    progLabel: panel.querySelector(".progress-bar-label"),
-    stages: panel.querySelectorAll(".stage"),
-  };
-}
-
-function buildProcessingPanelHtml() {
-  const steps = PIPELINE_STEPS.map(
-    (s) => `
-        <div class="stage" data-step="${s.key}">
-          <span class="stage-name">${s.label}</span>
-          <span class="stage-meta" data-meta></span>
-        </div>`
-  ).join("");
-  return `
-    <div class="processing-panel task-proc-panel">
-      <p class="section-label">转码中</p>
-      <div class="proc-canvas-wrap">
-        <canvas class="proc-canvas" aria-hidden="true"></canvas>
-      </div>
-      <div class="progress-bar">
-        <div class="progress-bar-head">
-          <span class="progress-bar-label">排队中</span>
-          <span class="progress-bar-pct">0%</span>
-        </div>
-        <div class="progress-track"><div class="progress-fill"></div></div>
-      </div>
-      <div class="stage-row">${steps}</div>
-    </div>`;
-}
-
-const STEP_DEFAULT_METRICS = {
-  parse: { kind: "idle", activity: 0.15 },
-  fetch_meta: { kind: "network", activity: 0.32 },
-  fetch_subtitle: { kind: "network", activity: 0.38 },
-  download: { kind: "network", activity: 0.45 },
-  extract_audio: { kind: "cpu", activity: 0.55 },
-  stt: { kind: "cpu", activity: 0.72 },
-  correct: { kind: "network", activity: 0.42 },
-};
-
-function normalizeMetrics(raw, step) {
-  const base = STEP_DEFAULT_METRICS[step] || { kind: "idle", activity: 0.2 };
-  const m = raw && typeof raw === "object" ? raw : {};
-  return {
-    kind: m.kind || base.kind,
-    activity: Number(m.activity ?? base.activity) || base.activity,
-    cpu: Number(m.cpu) || 0,
-    network_kbps: Number(m.network_kbps) || 0,
-    detail: m.detail || "",
-    facts: Array.isArray(m.facts) ? m.facts : [],
-    title_snip: m.title_snip || "",
-    pct: m.pct ?? null,
-  };
-}
-
-function fmtKbps(kbps) {
-  const n = Number(kbps) || 0;
-  if (n <= 0) return "";
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} MB/s`;
-  return `${Math.round(n)} KB/s`;
-}
-
-function formatStageMeta(step, metrics) {
-  if (!metrics) return "";
-  const facts = Array.isArray(metrics.facts) ? metrics.facts : [];
-  const byKey = Object.fromEntries(facts.map((f) => [f.key, f.value]));
-  const parts = [];
-
-  if (step === "parse") {
-    return byKey.link || metrics.detail || "解析中";
-  }
-  if (step === "fetch_meta") {
-    if (metrics.title_snip) return metrics.title_snip;
-    if (byKey.duration) parts.push(byKey.duration);
-    if (byKey.platform) parts.push(byKey.platform);
-    return parts.join(" · ") || metrics.detail || "获取中";
-  }
-  if (step === "fetch_subtitle") {
-    return byKey.subtitle || metrics.detail || "检查中";
-  }
-  if (step === "download") {
-    const speed = fmtKbps(metrics.network_kbps);
-    if (speed) parts.push(speed);
-    if (metrics.pct != null) parts.push(`${Math.round(metrics.pct)}%`);
-    if (byKey.loaded) parts.push(byKey.loaded);
-    if (byKey.target) parts.push(byKey.target);
-    if (!parts.length && metrics.detail) return metrics.detail;
-    return parts.join(" · ") || "下载中";
-  }
-  if (step === "extract_audio") {
-    if (byKey.track) parts.push(byKey.track);
-    if (byKey.video) parts.push(byKey.video);
-    if (metrics.cpu) parts.push(`CPU ${Math.round(metrics.cpu)}%`);
-    return parts.join(" · ") || metrics.detail || "提取中";
-  }
-  if (step === "stt") {
-    if (byKey.audio) parts.push(byKey.audio);
-    if (byKey.wave) parts.push(byKey.wave);
-    if (metrics.cpu) parts.push(`CPU ${Math.round(metrics.cpu)}%`);
-    return parts.join(" · ") || metrics.detail || "识别中";
-  }
-  if (step === "correct") {
-    if (byKey.draft) parts.push(byKey.draft);
-    return parts.join(" · ") || metrics.detail || "修正中";
-  }
-  return metrics.detail || "";
-}
-
-function resetStageMetas() {
-  stageMetaCache = {};
-  const { stages: stageEls } = getProcElements() || {};
-  (stageEls || []).forEach((el) => {
-    const meta = el.querySelector("[data-meta]");
-    if (meta) meta.textContent = "";
-  });
-}
-
-function updateStageMetas(metrics, activeIdx, status) {
-  if (metrics && activeIdx >= 0 && activeIdx < PIPELINE_STEPS.length) {
-    const key = PIPELINE_STEPS[activeIdx].key;
-    const text = formatStageMeta(key, metrics);
-    if (text) stageMetaCache[key] = text;
-  }
-
-  const { stages: stageEls } = getProcElements() || {};
-  (stageEls || []).forEach((el, i) => {
-    const meta = el.querySelector("[data-meta]");
-    if (!meta) return;
-    const key = el.dataset.step;
-    if (status === "done") {
-      meta.textContent = stageMetaCache[key] || "完成";
-      return;
-    }
-    if (i < activeIdx) {
-      meta.textContent = stageMetaCache[key] || "完成";
-    } else if (i === activeIdx) {
-      meta.textContent = stageMetaCache[key] || "进行中";
-    } else {
-      meta.textContent = stageMetaCache[key] || "";
-    }
-  });
-}
-
-function setMetricTarget(metrics) {
-  metricTarget = { ...metricTarget, ...metrics };
-}
-
-function lerpMetrics() {
-  const k = 0.12;
-  const kFast = 0.22;
-  metricDisplay.activity += (metricTarget.activity - metricDisplay.activity) * k;
-  metricDisplay.cpu += (metricTarget.cpu - metricDisplay.cpu) * kFast;
-  metricDisplay.network_kbps += (metricTarget.network_kbps - metricDisplay.network_kbps) * kFast;
-  metricDisplay.kind = metricTarget.kind;
-  metricDisplay.detail = metricTarget.detail;
-}
-
-const STATUS_LABEL = {
-  pending: "排队中",
-  processing: "转换中",
-  done: "成功",
-  failed: "失败",
-};
-
+const TM = () => window.Vid2TaskModal;
 const SUBTITLES_API = "/api/v1/subtitles";
 const HISTORY_DISPLAY_LIMIT = 20;
-
-const RETRY_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.36M21 3v6h-6"/></svg>';
 
 const ICON_COPY =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
@@ -225,28 +16,365 @@ const ICON_COPY =
 const ICON_DOWNLOAD =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>';
 
-const ICON_EXTERNAL =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></svg>';
+function showStatus(text) {
+  if (!statusMsg) return;
+  statusMsg.hidden = false;
+  statusMsg.textContent = text;
+}
 
-/* ================= decorative: hero wave（单 canvas，避免几十个 DOM+阴影动画卡死） ================= */
+function hideStatus() {
+  if (!statusMsg) return;
+  statusMsg.hidden = true;
+}
+
+function escapeHtml(str) {
+  return uiEscapeHtml(str);
+}
+
+function histActionBtn(kind, title, iconSvg) {
+  return `<button type="button" class="hist-act hist-act-${kind}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${iconSvg}</button>`;
+}
+
+function applyHistCardStatus(block, view) {
+  block.classList.remove("hist-done", "hist-fail", "hist-pending", "hist-processing");
+  block.classList.add(histStatusClass(view.status, view));
+  const html = histCardStatusHtml(view);
+  const meta = block.querySelector(".hist-card-meta");
+  let pill = block.querySelector(".hist-card-status");
+  if (html) {
+    if (pill) pill.outerHTML = html;
+    else meta?.insertAdjacentHTML("afterbegin", html);
+  } else if (pill) {
+    pill.remove();
+  }
+}
+
+function patchHistoryCard(task) {
+  if (!historyList || !TM()) return;
+  const block = historyList.querySelector(`.hist-card[data-task-id="${task.id}"]`);
+  if (!block) return;
+
+  applyHistCardStatus(block, task);
+
+  const titleText = TM().historyTitleLabel(task);
+  const shortTitle =
+    titleText.length > 72 ? `${titleText.slice(0, 72)}…` : titleText;
+  const titleEl = block.querySelector(".hist-card-title");
+  if (titleEl) titleEl.textContent = shortTitle;
+
+  const author = TM().historyAuthorLabel(task);
+  const authorEl = block.querySelector(".hist-card-author");
+  if (authorEl) {
+    authorEl.innerHTML = author
+      ? author.length > 28
+        ? `${escapeHtml(author.slice(0, 28))}…`
+        : escapeHtml(author)
+      : `<span class="hist-card-author-muted">未知播主</span>`;
+  }
+
+  const avatarCol = block.querySelector(".m-avatar-col");
+  if (avatarCol) {
+    const wrap = document.createElement("div");
+    wrap.innerHTML = renderPlatformAvatarCol(task.platform, TM().historyAvatarInner(task));
+    avatarCol.replaceWith(wrap.firstElementChild);
+  }
+
+  const durationLabel = taskDurationLabel(task);
+  let durationEl = block.querySelector(".hist-card-duration");
+  if (durationLabel) {
+    if (durationEl) durationEl.textContent = durationLabel;
+    else {
+      block.querySelector(".hist-card-meta")?.insertAdjacentHTML(
+        "beforeend",
+        `<span class="hist-card-duration">${escapeHtml(durationLabel)}</span>`
+      );
+    }
+  }
+
+  if (!TM().hasTranscript(task)) return;
+  let actions = block.querySelector(".hist-card-actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "hist-card-actions";
+    block.querySelector(".hist-card-top")?.appendChild(actions);
+  }
+  if (!actions.querySelector(".hist-act-primary")) {
+    actions.insertAdjacentHTML("afterbegin", histActionBtn("primary", "复制口播文稿", ICON_COPY));
+    actions.querySelector(".hist-act-primary")?.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        const fresh = await TM().fetchTask(task.id);
+        TM().copyToClipboard(TM().taskTranscriptText(fresh), e.currentTarget);
+      } catch (err) {
+        showStatus(err.message || "复制失败");
+      }
+    });
+  }
+}
+
+function createHistoryBlock(view) {
+  const plat = platformClass(view.platform);
+  const block = document.createElement("article");
+  block.className = `m-card hist-card ${histStatusClass(view.status, view)} ${plat}`;
+  block.dataset.taskId = view.id;
+
+  const titleText = TM().historyTitleLabel(view);
+  const shortTitle =
+    titleText.length > 72 ? `${escapeHtml(titleText.slice(0, 72))}…` : escapeHtml(titleText);
+  const author = TM().historyAuthorLabel(view);
+  const authorHtml = author
+    ? author.length > 28
+      ? `${escapeHtml(author.slice(0, 28))}…`
+      : escapeHtml(author)
+    : `<span class="hist-card-author-muted">未知播主</span>`;
+
+  const transcriptText = TM().taskTranscriptText(view);
+  const actionBtns = [];
+  if (TM().hasTranscript(view)) {
+    actionBtns.push(histActionBtn("primary", "复制口播文稿", ICON_COPY));
+  }
+  if (TM().canDownloadVideo(view.status)) {
+    actionBtns.push(histActionBtn("ghost", "下载视频", ICON_DOWNLOAD));
+  }
+  const actionsHtml = actionBtns.length
+    ? `<div class="hist-card-actions">${actionBtns.join("")}</div>`
+    : "";
+
+  const durationLabel = taskDurationLabel(view);
+  const durationHtml = durationLabel
+    ? `<span class="hist-card-duration">${escapeHtml(durationLabel)}</span>`
+    : "";
+  const publishedLabel = taskPublishedLabel(view);
+  const publishedHtml = publishedLabel
+    ? `<time class="hist-card-published" datetime="${escapeHtml(view.published_at || "")}">${escapeHtml(publishedLabel)}</time>`
+    : "";
+  const likeLabel = taskLikeLabel(view);
+  const likeHtml = likeLabel
+    ? `<span class="hist-card-like" title="点赞">${escapeHtml(likeLabel)}</span>`
+    : "";
+
+  block.innerHTML = `
+    <div class="m-card-shell hist-card-shell">
+      <div class="hist-card-top">
+        ${renderPlatformAvatarCol(view.platform, TM().historyAvatarInner(view))}
+        <div class="hist-card-main">
+          <strong class="m-card-name hist-card-title">${shortTitle}</strong>
+          <div class="hist-card-meta">
+            ${histCardStatusHtml(view)}
+            <span class="hist-card-author">${authorHtml}</span>
+            ${publishedHtml}
+            ${likeHtml}
+            ${durationHtml}
+            <span class="hist-card-task-id">#${escapeHtml(String(view.id))}</span>
+          </div>
+        </div>
+        ${actionsHtml}
+      </div>
+    </div>`;
+
+  block.addEventListener("click", (e) => TM()?.openById(view.id, e));
+
+  block.querySelector(".hist-act-primary")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    TM().copyToClipboard(transcriptText, e.currentTarget);
+  });
+
+  block.querySelector(".hist-act-ghost")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    TM().triggerVideoDownload(view.id, e.currentTarget);
+  });
+
+  block.querySelector(".m-avatar-img")?.addEventListener("error", (e) => {
+    e.currentTarget.remove();
+  });
+
+  return block;
+}
+
+let historyRefreshTimer = null;
+let historyListSnapshotCache = "";
+
+function historyListSnapshot(items) {
+  return JSON.stringify(
+    items.map((item) => {
+      const v = TM().subtitleToView(item);
+      return {
+        id: v.id,
+        status: v.status,
+        progress_step: v.progress_step,
+        title: v.title,
+        author_name: v.author_name,
+        duration_sec: v.duration_sec,
+        has_transcript: TM().hasTranscript(v) ? 1 : 0,
+      };
+    })
+  );
+}
+
+function patchHistoryListFromViews(views) {
+  if (!historyList) return false;
+  const cards = [...historyList.querySelectorAll(".hist-card")];
+  if (cards.length !== views.length) return false;
+  const byId = new Map(cards.map((c) => [c.dataset.taskId, c]));
+  for (const view of views) {
+    if (!byId.has(String(view.id))) return false;
+    patchHistoryCard(view);
+  }
+  return true;
+}
+
+function historyHasActiveCards() {
+  return !!historyList?.querySelector(".hist-pending, .hist-processing");
+}
+
+function scheduleHistoryAutoRefresh() {
+  if (historyRefreshTimer) return;
+  historyRefreshTimer = setInterval(async () => {
+    if (!historyHasActiveCards()) {
+      clearInterval(historyRefreshTimer);
+      historyRefreshTimer = null;
+      return;
+    }
+    try {
+      await loadHistory({ silent: true });
+    } catch {
+      /* ignore */
+    }
+  }, 6000);
+}
+
+async function loadHistory(options = {}) {
+  const silent = options.silent === true;
+  if (!TM()) return;
+  try {
+    const res = await fetch(`${SUBTITLES_API}?limit=${HISTORY_DISPLAY_LIMIT}`);
+    const { data, status } = await TM().parseJsonResponse(res);
+    if (status !== 200) {
+      if (!silent) historyList.innerHTML = '<div class="m-empty"><p>加载失败</p></div>';
+      return;
+    }
+
+    const items = data.items || [];
+    const snap = historyListSnapshot(items);
+    const views = items.map((item) => TM().subtitleToView(item));
+
+    if (silent) {
+      if (patchHistoryListFromViews(views)) {
+        historyListSnapshotCache = snap;
+        return;
+      }
+      if (historyListSnapshotCache === snap && historyList.querySelector(".hist-card")) {
+        return;
+      }
+    }
+
+    historyListSnapshotCache = snap;
+    historyList.innerHTML = "";
+
+    if (!items.length) {
+      historyList.innerHTML = `
+        <div class="m-empty m-empty-lg">
+          <div class="m-empty-icon" aria-hidden="true">◌</div>
+          <p>暂无记录</p>
+          <span>提交视频链接后，提取结果会出现在这里</span>
+        </div>`;
+      return;
+    }
+
+    for (const view of views) {
+      historyList.appendChild(createHistoryBlock(view));
+    }
+    if (historyHasActiveCards()) scheduleHistoryAutoRefresh();
+  } catch {
+    if (!silent) historyList.innerHTML = '<div class="m-empty"><p>加载失败</p></div>';
+  }
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const url = urlInput.value.trim();
+  if (!url) {
+    urlInput.classList.remove("shake");
+    void urlInput.offsetWidth;
+    urlInput.classList.add("shake");
+    urlInput.focus();
+    return;
+  }
+
+  submitBtn.disabled = true;
+  showStatus("提交中…");
+
+  try {
+    const res = await fetch(SUBTITLES_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const { data, status } = await TM().parseJsonResponse(res);
+    if (status === 400) throw new Error(data.detail || "提交失败");
+    if (status === 429) {
+      const msg = data.detail || "当前已有进行中的提取任务，请等待完成";
+      if (data.active_id) {
+        showStatus(`${msg}（#${data.active_id}）`);
+        TM().startPolling(data.active_id);
+      } else {
+        showStatus(msg);
+      }
+      submitBtn.disabled = false;
+      return;
+    }
+
+    const task = TM().subtitleToView(data);
+    const cached = data.cached;
+    TM().renderTask(task);
+
+    if (task.status === "done") {
+      showStatus(cached ? "命中缓存，直接返回已有结果" : "已完成");
+      submitBtn.disabled = false;
+      TM().renderTask(task, true);
+      loadHistory();
+      urlInput.value = "";
+    } else if (task.status === "failed") {
+      showStatus(task.error_message ? `失败：${task.error_message}` : "任务失败，可点击重试");
+      submitBtn.disabled = false;
+    } else {
+      TM().startPolling(task.id);
+    }
+  } catch (err) {
+    showStatus(err.message);
+    submitBtn.disabled = false;
+  }
+});
+
+refreshHistoryBtn?.addEventListener("click", (e) => {
+  miniBurst(e.clientX, e.clientY);
+  historyList?.querySelectorAll(".hist-card").forEach((el, i) => {
+    el.style.transition = "opacity .25s ease";
+    el.style.opacity = "0.35";
+    setTimeout(() => {
+      el.style.opacity = "1";
+    }, 120 + i * 40);
+  });
+  loadHistory();
+});
+
+submitBtn?.addEventListener("click", (e) => {
+  if (!submitBtn.disabled) miniBurst(e.clientX, e.clientY);
+});
+
 (function initHeroWave() {
   const hero = document.getElementById("heroWave");
   if (!hero) return;
-  hero.replaceChildren();
   const canvas = document.createElement("canvas");
   canvas.setAttribute("aria-hidden", "true");
   hero.appendChild(canvas);
-  const ctx = canvas.getContext("2d", { alpha: true });
+  const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  const N = 48;
-  const phases = Float32Array.from({ length: N }, () => Math.random() * Math.PI * 2);
-  const speeds = Float32Array.from({ length: N }, () => 1.1 + Math.random() * 1.4);
-  const bases = Float32Array.from({ length: N }, (_, i) => {
-    const envelope = 0.4 + 0.6 * Math.sin((i / (N - 1)) * Math.PI);
-    return (0.35 + Math.random() * 0.55) * envelope;
-  });
-
+  const N = 12;
+  const bases = Array.from({ length: N }, () => 0.25 + Math.random() * 0.55);
+  const phases = Array.from({ length: N }, () => Math.random() * Math.PI * 2);
+  const speeds = Array.from({ length: N }, () => 0.7 + Math.random() * 0.6);
   let w = 0;
   let h = 0;
   let raf = 0;
@@ -284,7 +412,9 @@ const ICON_EXTERNAL =
       const x = i * gap + (gap - barW) * 0.5;
       const y = (h - bh) * 0.5;
       const t = i / (N - 1);
-      let r; let g; let b;
+      let r;
+      let g;
+      let b;
       if (t < 0.5) {
         const u = t * 2;
         r = 70 + (154 - 70) * u;
@@ -313,39 +443,29 @@ const ICON_EXTERNAL =
     raf = 0;
   }
 
-  resize();
   start();
-  window.addEventListener("resize", () => {
-    resize();
-    start();
-  });
+  window.addEventListener("resize", resize);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stop();
     else start();
   });
 })();
 
-/* ================= decorative: background particles（轻量，限帧，无连线） ================= */
 (function initBgCanvas() {
   const canvas = document.getElementById("bgCanvas");
   if (!canvas) return;
   const ctx = canvas.getContext("2d", { alpha: true });
   if (!ctx) return;
+  const MAX = 28;
   let w = 0;
   let h = 0;
   let raf = 0;
   let last = 0;
-  const FRAME_MS = 1000 / 24;
-  const MAX = 36;
+  const FRAME_MS = 1000 / 30;
 
   function resize() {
-    const nw = window.innerWidth;
-    const nh = window.innerHeight;
-    if (nw === w && nh === h) return;
-    w = nw;
-    h = nh;
-    canvas.width = w;
-    canvas.height = h;
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
   }
 
   function spawn() {
@@ -375,8 +495,7 @@ const ICON_EXTERNAL =
     last = now;
     resize();
     ctx.clearRect(0, 0, w, h);
-    for (let i = 0; i < particles.length; i++) {
-      const p = particles[i];
+    for (const p of particles) {
       p.phase += 0.012 * p.speed * dt;
       p.x += (p.vx + Math.sin(p.phase) * 0.02) * dt;
       p.y += p.vy * dt;
@@ -419,1223 +538,17 @@ const ICON_EXTERNAL =
   });
 })();
 
-function miniBurst(x, y, rgb = "70,224,201") {
-  for (let i = 0; i < 9; i++) {
-    const s = document.createElement("span");
-    s.className = "spark";
-    const angle = Math.random() * Math.PI * 2;
-    const dist = 18 + Math.random() * 26;
-    s.style.setProperty("--dx", Math.cos(angle) * dist + "px");
-    s.style.setProperty("--dy", Math.sin(angle) * dist + "px");
-    s.style.left = x + "px";
-    s.style.top = y + "px";
-    s.style.background = `rgba(${rgb},0.9)`;
-    s.style.boxShadow = `0 0 6px rgba(${rgb},0.8)`;
-    document.body.appendChild(s);
-    setTimeout(() => s.remove(), 650);
-  }
-}
-
-function buildHistWave(el, heights) {
-  el.innerHTML = "";
-  heights.forEach((v) => {
-    const s = document.createElement("span");
-    s.style.height = v + "px";
-    el.appendChild(s);
+if (window.Vid2TaskModal) {
+  Vid2TaskModal.configure({
+    onStatus: (text) => showStatus(text),
+    onStatusHide: hideStatus,
+    onTaskDone: () => loadHistory(),
+    onPoll: (task) => patchHistoryCard(task),
+    setSubmitDisabled: (disabled) => {
+      submitBtn.disabled = !!disabled;
+    },
   });
+  Vid2TaskModal.init();
 }
 
-function randomWaveHeights() {
-  return Array.from({ length: 5 }, () => 4 + Math.round(Math.random() * 13));
-}
-
-function statusBadgeClass(status) {
-  if (status === "done") return "ok";
-  if (status === "failed") return "fail";
-  if (status === "processing") return "run";
-  return "wait";
-}
-
-function histItemClass(status) {
-  if (status === "done") return "is-ok";
-  if (status === "failed") return "is-fail";
-  if (status === "processing") return "is-run";
-  return "is-wait";
-}
-
-function fieldBoxClass(text, emptyFallback) {
-  const val = (text || "").trim();
-  if (!val || val === emptyFallback) return "field-box empty";
-  return "field-box filled";
-}
-
-function showStatus(text) {
-  if (!statusMsg) return;
-  statusMsg.hidden = false;
-  statusMsg.textContent = text;
-}
-
-function hideStatus() {
-  if (!statusMsg) return;
-  statusMsg.hidden = true;
-}
-
-function escapeHtml(str) {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function applyHistCardStatus(block, view) {
-  block.classList.remove("hist-done", "hist-fail", "hist-pending", "hist-processing");
-  block.classList.add(histStatusClass(view.status, view));
-  const html = histCardStatusHtml(view);
-  const meta = block.querySelector(".hist-card-meta");
-  let pill = block.querySelector(".hist-card-status");
-  if (html) {
-    if (pill) pill.outerHTML = html;
-    else meta?.insertAdjacentHTML("afterbegin", html);
-  } else if (pill) {
-    pill.remove();
-  }
-}
-
-async function copyToClipboard(text, btn) {
-  const value = String(text || "").trim();
-  if (!value) return false;
-  try {
-    await navigator.clipboard.writeText(value);
-    if (btn) {
-      const label = btn.querySelector("span");
-      if (label) {
-        const orig = label.textContent;
-        label.textContent = "已复制";
-        btn.disabled = true;
-        setTimeout(() => {
-          label.textContent = orig;
-          btn.disabled = false;
-        }, 1200);
-      } else {
-        const origTitle = btn.title;
-        btn.title = "已复制";
-        btn.disabled = true;
-        setTimeout(() => {
-          btn.title = origTitle;
-          btn.disabled = false;
-        }, 1200);
-      }
-    } else {
-      showStatus("已复制到剪贴板");
-    }
-    return true;
-  } catch {
-    showStatus("复制失败，请手动复制");
-    return false;
-  }
-}
-
-function canDownloadVideo(status) {
-  return status === "done" || status === "failed";
-}
-
-function taskTranscriptText(task) {
-  return String(task.corrected_transcript || task.raw_transcript || "").trim();
-}
-
-function hasTranscript(task) {
-  return !!taskTranscriptText(task);
-}
-
-function historyTranscriptText(view) {
-  return taskTranscriptText(view);
-}
-
-function hasHistoryTranscript(view) {
-  return hasTranscript(view);
-}
-
-function taskVideoDownloadApi(taskId) {
-  return `${SUBTITLES_API}/${taskId}/download`;
-}
-
-async function triggerVideoDownload(taskId, btn) {
-  if (btn) btn.disabled = true;
-  showStatus("正在准备视频（首次可能需要几十秒）…");
-  try {
-    const checkRes = await fetch(`${taskVideoDownloadApi(taskId)}?check=1`);
-    if (!checkRes.ok) {
-      const data = await checkRes.json().catch(() => ({}));
-      throw new Error(data.detail || `无法下载（HTTP ${checkRes.status}）`);
-    }
-    window.location.assign(taskVideoDownloadApi(taskId));
-    showStatus("下载已开始，请查看浏览器下载栏");
-  } catch (err) {
-    showStatus(err.message || "下载失败");
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-function histActionBtn(kind, title, iconSvg) {
-  return `<button type="button" class="hist-act hist-act-${kind}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${iconSvg}</button>`;
-}
-
-function buildTaskHeroHtml(task) {
-  const author = historyAuthorLabel(task) || "未知播主";
-  const title = task.title || task.video_url || `任务 #${task.id}`;
-  const durationLabel = taskDurationLabel(task);
-  const durationHtml = durationLabel
-    ? `<span class="td-hero-duration">${escapeHtml(durationLabel)}</span>`
-    : "";
-  const publishedLabel = taskPublishedLabel(task);
-  const publishedHtml = publishedLabel
-    ? `<time class="td-hero-published" datetime="${escapeHtml(task.published_at || "")}">${escapeHtml(publishedLabel)}</time>`
-    : "";
-  return `
-    <header class="td-hero">
-      ${renderPlatformAvatarCol(task.platform, historyAvatarInner(task))}
-      <div class="td-hero-body">
-        <h3 class="td-hero-title">${escapeHtml(title)}</h3>
-        <p class="td-hero-meta">
-          <span class="td-hero-author">${escapeHtml(author)}</span>
-          ${publishedHtml}
-          ${durationHtml}
-          <span class="td-hero-task-id">#${escapeHtml(String(task.id))}</span>
-        </p>
-      </div>
-    </header>`;
-}
-
-function buildTaskActionBarHtml(task) {
-  const transcript = taskTranscriptText(task);
-  const parts = [];
-  if (transcript) {
-    parts.push(
-      `<button type="button" class="td-act td-act-primary" id="modal-copy-text-btn">${ICON_COPY}<span>复制文稿</span></button>`
-    );
-  }
-  if (canDownloadVideo(task.status)) {
-    parts.push(
-      `<button type="button" class="td-act" id="modal-dl-btn">${ICON_DOWNLOAD}<span>下载视频</span></button>`
-    );
-  }
-  parts.push(
-    `<a class="td-act td-act-link" href="${escapeHtml(task.video_url)}" target="_blank" rel="noopener">${ICON_EXTERNAL}<span>原视频</span></a>`
-  );
-  return `<div class="td-action-bar">${parts.join("")}</div>`;
-}
-
-function buildTranscriptSectionHtml(task) {
-  const text = taskTranscriptText(task);
-  if (!text) {
-    if (taskIsActive(task.status)) return "";
-    return `
-      <section class="td-section td-section-empty">
-        <p>暂无口播文稿${task.status === "failed" ? "（提取失败）" : ""}</p>
-      </section>`;
-  }
-  const live = taskIsActive(task.status);
-  const metaPill = live
-    ? `<span class="td-meta-pill td-meta-pill-live">转录完成 · 后处理中</span>`
-    : `<span class="td-meta-pill">${text.length.toLocaleString()} 字</span>`;
-  return `
-    <section class="td-section td-section-hero">
-      <div class="td-section-head">
-        <h4 class="td-section-title">口播文稿</h4>
-        ${metaPill}
-      </div>
-      <div class="td-transcript">${escapeHtml(text)}</div>
-    </section>`;
-}
-
-function buildTaskExtrasHtml(task) {
-  const blocks = [];
-  const raw = (task.raw_transcript || "").trim();
-  const corrected = (task.corrected_transcript || "").trim();
-  if (raw && corrected && raw !== corrected) {
-    blocks.push(`
-      <details class="td-details">
-        <summary>原始转录</summary>
-        <div class="td-details-body">${escapeHtml(raw)}</div>
-      </details>`);
-  }
-  const desc = (task.description || "").trim();
-  if (desc) {
-    blocks.push(`
-      <details class="td-details">
-        <summary>视频描述</summary>
-        <div class="td-details-body">${escapeHtml(desc)}</div>
-      </details>`);
-  }
-  if (!blocks.length) return "";
-  return `<div class="td-extras">${blocks.join("")}</div>`;
-}
-
-function buildTaskModalFootHtml(task) {
-  if (task.status !== "failed") return "";
-  return `<div class="m-modal-actions"><button type="button" class="td-act td-act-danger" id="modal-retry-btn">${RETRY_SVG}<span>重新提取</span></button></div>`;
-}
-
-function syncTaskModalFoot(task) {
-  if (!taskModalFoot) return;
-  const html = buildTaskModalFootHtml(task);
-  taskModalFoot.innerHTML = html;
-  taskModalFoot.hidden = !html;
-}
-
-function historyAuthorLabel(view) {
-  return String(view.author_name || "").trim();
-}
-
-function historyTitleLabel(view) {
-  const title = String(view.title || "").trim();
-  if (title) return title;
-  return "未命名作品";
-}
-
-function historyAvatarInner(view) {
-  const name = historyAuthorLabel(view) || historyTitleLabel(view);
-  return renderAuthorAvatarInner(name, view.avatar_url, view.video_id);
-}
-
-function buildTaskDetailHtml(task) {
-  let errorHtml = "";
-  if (task.status === "failed" && task.error_message) {
-    errorHtml = `
-      <div class="td-alert td-alert-error" role="alert">
-        <strong>提取失败</strong>
-        <p>${escapeHtml(task.error_message)}</p>
-      </div>`;
-  }
-
-  const procHtml = taskIsActive(task.status) ? buildProcessingPanelHtml() : "";
-  const heroHtml = buildTaskHeroHtml(task);
-  const hasPartial = hasTranscript(task);
-  const actionBarHtml =
-    taskIsActive(task.status) && !hasPartial ? "" : buildTaskActionBarHtml(task);
-  const transcriptHtml = buildTranscriptSectionHtml(task);
-  const extrasHtml = buildTaskExtrasHtml(task);
-
-  return `
-    <div class="task-detail${taskIsActive(task.status) ? " is-live" : ""}" data-task-id="${task.id}">
-      ${procHtml}
-      <div class="task-detail-body">
-        ${heroHtml}
-        ${errorHtml}
-        ${actionBarHtml}
-        ${transcriptHtml}
-        ${extrasHtml}
-      </div>
-    </div>`;
-}
-
-function bindTaskModalActions(task) {
-  const retryBtn = document.getElementById("modal-retry-btn");
-  if (retryBtn) {
-    retryBtn.addEventListener("click", (e) => {
-      miniBurst(e.clientX, e.clientY);
-      handleRetry(task.id);
-    });
-  }
-
-  const copyBtn = document.getElementById("modal-copy-text-btn");
-  if (copyBtn) {
-    copyBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const text = taskTranscriptText(task);
-      if (text) copyToClipboard(text, copyBtn);
-    });
-  }
-
-  const dlBtn = document.getElementById("modal-dl-btn");
-  if (dlBtn) {
-    dlBtn.addEventListener("click", (e) => {
-      miniBurst(e.clientX, e.clientY);
-      triggerVideoDownload(task.id, dlBtn);
-    });
-  }
-}
-
-function openTaskModal(task, animate = false) {
-  if (!taskModal || !taskModalBody) return;
-  viewingTaskId = task.id;
-  currentTaskId = task.id;
-  if (taskModalTitle) taskModalTitle.textContent = "任务详情";
-  taskModalBody.innerHTML = buildTaskDetailHtml(task);
-  syncTaskModalFoot(task);
-  if (animate) {
-    const detail = taskModalBody.querySelector(".task-detail");
-    detail?.classList.add("enter");
-  }
-  bindTaskModalActions(task);
-  taskModal.hidden = false;
-  taskModal.setAttribute("aria-hidden", "false");
-  document.body.classList.add("m-modal-open");
-  if (taskIsActive(task.status)) {
-    scheduleProcAnim(task);
-  } else {
-    stopProcAnim();
-  }
-}
-
-function closeTaskModal() {
-  if (!taskModal) return;
-  stopProcAnim();
-  if (taskModalFoot) {
-    taskModalFoot.innerHTML = "";
-    taskModalFoot.hidden = true;
-  }
-  taskModal.hidden = true;
-  taskModal.setAttribute("aria-hidden", "true");
-  document.body.classList.remove("m-modal-open");
-}
-
-function initTaskModal() {
-  if (!taskModal) return;
-  taskModal.querySelectorAll("[data-modal-close]").forEach((el) => {
-    el.addEventListener("click", closeTaskModal);
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !taskModal.hidden) closeTaskModal();
-  });
-}
-
-function renderTask(task, animate = false) {
-  openTaskModal(task, animate);
-}
-
-function patchTaskHero(inModal, task) {
-  const titleEl = inModal.querySelector(".td-hero-title");
-  if (titleEl) {
-    titleEl.textContent = task.title || task.video_url || `任务 #${task.id}`;
-  }
-  const authorEl = inModal.querySelector(".td-hero-author");
-  if (authorEl) {
-    authorEl.textContent = historyAuthorLabel(task) || "未知播主";
-  }
-  const durationEl = inModal.querySelector(".td-hero-duration");
-  const durationLabel = taskDurationLabel(task);
-  if (durationEl) {
-    if (durationLabel) durationEl.textContent = durationLabel;
-  } else if (durationLabel) {
-    const meta = inModal.querySelector(".td-hero-meta");
-    meta?.insertAdjacentHTML(
-      "beforeend",
-      `<span class="td-hero-duration">${escapeHtml(durationLabel)}</span>`
-    );
-  }
-  const avatarCol = inModal.querySelector(".m-avatar-col");
-  if (avatarCol) {
-    const wrap = document.createElement("div");
-    wrap.innerHTML = renderPlatformAvatarCol(task.platform, historyAvatarInner(task));
-    avatarCol.replaceWith(wrap.firstElementChild);
-  }
-}
-
-function ensureTranscriptSection(inModal, task) {
-  const body = inModal.querySelector(".task-detail-body");
-  if (!body) return;
-  const html = buildTranscriptSectionHtml(task);
-  if (!html) return;
-  const existing = body.querySelector(".td-section-hero, .td-section-empty");
-  if (existing) {
-    existing.outerHTML = html;
-    return;
-  }
-  const actionBar = body.querySelector(".td-action-bar");
-  if (actionBar) actionBar.insertAdjacentHTML("afterend", html);
-  else body.insertAdjacentHTML("beforeend", html);
-}
-
-function ensureTaskActionBar(inModal, task) {
-  const body = inModal.querySelector(".task-detail-body");
-  if (!body || body.querySelector(".td-action-bar")) return;
-  const html = buildTaskActionBarHtml(task);
-  if (!html) return;
-  const hero = body.querySelector(".td-hero");
-  if (hero) hero.insertAdjacentHTML("afterend", html);
-  else body.insertAdjacentHTML("afterbegin", html);
-  bindTaskModalActions(task);
-}
-
-function patchHistoryCard(task) {
-  if (!historyList) return;
-  const block = historyList.querySelector(`.hist-card[data-task-id="${task.id}"]`);
-  if (!block) return;
-
-  applyHistCardStatus(block, task);
-
-  const titleText = historyTitleLabel(task);
-  const shortTitle =
-    titleText.length > 72 ? `${titleText.slice(0, 72)}…` : titleText;
-  const titleEl = block.querySelector(".hist-card-title");
-  if (titleEl) titleEl.textContent = shortTitle;
-
-  const author = historyAuthorLabel(task);
-  const authorEl = block.querySelector(".hist-card-author");
-  if (authorEl) {
-    authorEl.innerHTML = author
-      ? author.length > 28
-        ? `${escapeHtml(author.slice(0, 28))}…`
-        : escapeHtml(author)
-      : `<span class="hist-card-author-muted">未知播主</span>`;
-  }
-
-  const avatarCol = block.querySelector(".m-avatar-col");
-  if (avatarCol) {
-    const wrap = document.createElement("div");
-    wrap.innerHTML = renderPlatformAvatarCol(task.platform, historyAvatarInner(task));
-    avatarCol.replaceWith(wrap.firstElementChild);
-  }
-
-  const durationLabel = taskDurationLabel(task);
-  let durationEl = block.querySelector(".hist-card-duration");
-  if (durationLabel) {
-    if (durationEl) durationEl.textContent = durationLabel;
-    else {
-      block.querySelector(".hist-card-meta")?.insertAdjacentHTML(
-        "beforeend",
-        `<span class="hist-card-duration">${escapeHtml(durationLabel)}</span>`
-      );
-    }
-  }
-
-  if (!hasTranscript(task)) return;
-  let actions = block.querySelector(".hist-card-actions");
-  if (!actions) {
-    actions = document.createElement("div");
-    actions.className = "hist-card-actions";
-    block.querySelector(".hist-card-top")?.appendChild(actions);
-  }
-  if (!actions.querySelector(".hist-act-primary")) {
-    actions.insertAdjacentHTML(
-      "afterbegin",
-      histActionBtn("primary", "复制口播文稿", ICON_COPY)
-    );
-    actions.querySelector(".hist-act-primary")?.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      try {
-        const fresh = await fetchTask(task.id);
-        copyToClipboard(taskTranscriptText(fresh), e.currentTarget);
-      } catch (err) {
-        showStatus(err.message || "复制失败");
-      }
-    });
-  }
-}
-
-function patchTaskStatus(task) {
-  const inModal =
-    taskModal &&
-    !taskModal.hidden &&
-    viewingTaskId === task.id &&
-    taskModalBody?.querySelector(`.task-detail[data-task-id="${task.id}"]`);
-  if (!inModal) {
-    if (
-      viewingTaskId === task.id &&
-      (task.status === "done" || task.status === "failed")
-    ) {
-      openTaskModal(task);
-    }
-    return;
-  }
-
-  patchTaskHero(inModal, task);
-
-  const transcriptEl = inModal.querySelector(".td-transcript");
-  const text = taskTranscriptText(task);
-  if (transcriptEl && text) {
-    transcriptEl.textContent = text;
-    const pill = inModal.querySelector(".td-section-head .td-meta-pill");
-    if (pill && !pill.classList.contains("td-meta-pill-live")) {
-      pill.textContent = `${text.length.toLocaleString()} 字`;
-    }
-  } else if (text) {
-    ensureTaskActionBar(inModal, task);
-    ensureTranscriptSection(inModal, task);
-    bindTaskModalActions(task);
-  }
-
-  if (task.status === "done" || task.status === "failed") {
-    stopProcAnim();
-    taskModalBody.innerHTML = buildTaskDetailHtml(task);
-    syncTaskModalFoot(task);
-    bindTaskModalActions(task);
-  }
-}
-
-function subtitleToView(data) {
-  const v = data.video || {};
-  const sub = data.subtitle || {};
-  let status = "processing";
-  if (data.ready) status = "done";
-  else if (data.error) status = "failed";
-  else if (data.processing?.status === "failed") status = "failed";
-  else if (data.processing?.status === "pending") status = "pending";
-
-  return {
-    id: data.id,
-    status,
-    platform: v.platform,
-    video_id: v.video_id,
-    video_url: v.url,
-    title: v.title,
-    description: v.description,
-    author_name: v.author_name || "",
-    avatar_url: v.avatar_url || "",
-    download_url: v.download_url || "",
-    duration_sec: Number(v.duration_sec) || 0,
-    published_at: v.published_at || "",
-    raw_transcript: sub.raw || "",
-    corrected_transcript: sub.corrected || "",
-    error_message: data.error || "",
-    progress_step: data.processing?.step || "",
-    progress_notice: data.processing?.notice || "",
-    progress_resume_from: data.processing?.resume_from || "",
-    queue_ahead: Number(data.processing?.queue_ahead) || 0,
-    progress_metrics: data.progress_metrics || {},
-    cached: data.cached,
-  };
-}
-
-function isTransientFetchError(err) {
-  if (!err) return false;
-  if (err.transient) return true;
-  const msg = String(err.message || "");
-  return (
-    err.name === "TypeError" ||
-    msg.includes("空响应") ||
-    msg.includes("无效数据") ||
-    msg.includes("Failed to fetch") ||
-    msg.includes("NetworkError") ||
-    msg.includes("Unexpected end of JSON")
-  );
-}
-
-async function parseJsonResponse(res) {
-  const text = await res.text();
-  const trimmed = text.trim();
-  if (!trimmed) {
-    const err = new Error(
-      res.ok
-        ? "服务器返回空响应，可能正在重启，请稍后重试"
-        : `请求失败（HTTP ${res.status}）`
-    );
-    err.transient = !res.ok || res.status >= 502;
-    throw err;
-  }
-  try {
-    return { data: JSON.parse(trimmed), status: res.status };
-  } catch {
-    const err = new Error(`服务器返回无效数据（HTTP ${res.status}）`);
-    err.transient = true;
-    throw err;
-  }
-}
-
-async function fetchTask(taskId) {
-  const res = await fetch(`${SUBTITLES_API}/${taskId}`);
-  const { data, status } = await parseJsonResponse(res);
-  if (status === 404) throw new Error("记录不存在");
-  if (status >= 500) throw new Error(data.detail || `加载失败（HTTP ${status}）`);
-  return subtitleToView(data);
-}
-
-async function retryTask(taskId) {
-  const res = await fetch(`${SUBTITLES_API}/${taskId}/retry`, { method: "POST" });
-  const { data, status } = await parseJsonResponse(res);
-  if (status === 400 || status === 404) {
-    throw new Error(data.detail || "重试失败");
-  }
-  return subtitleToView(data);
-}
-
-function resetProgressHighWater(taskId) {
-  progressHighWater = { taskId, pct: 0, stageIdx: -1 };
-}
-
-function computeProgressPct(task, activeIdx, status) {
-  const total = PIPELINE_STEPS.length;
-  if (status === "done") return 100;
-  if (activeIdx < 0) return 2;
-  const stepSpan = 92 / total;
-  const base = activeIdx * stepSpan;
-  let sub = 0;
-  const step = PIPELINE_STEPS[activeIdx]?.key;
-  const m = task.progress_metrics && typeof task.progress_metrics === "object" ? task.progress_metrics : {};
-  if (step === "download" && m.pct != null && Number(m.pct) > 0) {
-    sub = (Math.min(100, Number(m.pct)) / 100) * stepSpan * 0.88;
-  } else if ((step === "stt" || step === "extract_audio") && Number(m.cpu) > 0) {
-    sub = (Math.min(100, Number(m.cpu)) / 100) * stepSpan * 0.8;
-  } else if (Number(m.activity) > 0) {
-    sub = Math.min(1, Number(m.activity)) * stepSpan * 0.45;
-  }
-  return Math.min(95, base + stepSpan * 0.1 + sub);
-}
-
-function updateProcProgress(task) {
-  const proc = getProcElements();
-  const { progress_step: step, status } = task;
-  const pm = parseProgressMetrics(task.progress_metrics);
-  const queuedStep = pm.queued_step || "";
-  const isStepQueued =
-    status === "processing" &&
-    (queuedStep || String(pm.detail || "").includes("排队等待"));
-  let activeIdx = -1;
-  let metrics = null;
-
-  if (progressHighWater.taskId !== task.id) {
-    resetProgressHighWater(task.id);
-  }
-
-  if (status === "done") {
-    activeIdx = PIPELINE_STEPS.length;
-    metrics = { activity: 1, cpu: 0, network_kbps: 0, kind: "idle", detail: "完成", facts: [] };
-    setMetricTarget(metrics);
-  } else if (isStepQueued) {
-    const waitKey = queuedStep || step;
-    activeIdx = STEP_INDEX[waitKey] ?? STEP_INDEX[step] ?? 0;
-    metrics = {
-      kind: "idle",
-      activity: 0.06,
-      cpu: 0,
-      network_kbps: 0,
-      detail: pm.detail || "排队等待",
-      facts: [],
-    };
-    setMetricTarget(metrics);
-  } else if (step && STEP_INDEX[step] !== undefined) {
-    activeIdx = STEP_INDEX[step];
-    metrics = normalizeMetrics(task.progress_metrics, step);
-    setMetricTarget(metrics);
-  } else if (status === "processing") {
-    activeIdx = 0;
-    metrics = normalizeMetrics(task.progress_metrics, "parse");
-    setMetricTarget(metrics);
-  } else if (status === "pending") {
-    activeIdx = 0;
-    const ahead = Number(task.queue_ahead) || 0;
-    const detail = ahead > 0 ? `排队中 · 前面 ${ahead} 个` : "排队中";
-    metrics = { kind: "idle", activity: 0.1, cpu: 0, network_kbps: 0, detail, facts: [] };
-    setMetricTarget(metrics);
-  }
-
-  if (activeIdx >= 0 && status !== "done") {
-    activeIdx = Math.max(progressHighWater.stageIdx, activeIdx);
-    progressHighWater.stageIdx = activeIdx;
-  }
-
-  animStageIdx = Math.max(0, activeIdx);
-
-  if (proc?.stages) {
-    proc.stages.forEach((el, i) => {
-      el.classList.remove("active", "done", "queued");
-      if (status === "done" || i < activeIdx) {
-        el.classList.add("done");
-      } else if (isStepQueued && i === activeIdx) {
-        el.classList.add("queued");
-      } else if (i === activeIdx) {
-        el.classList.add("active");
-      }
-    });
-  }
-
-  updateStageMetas(metrics, activeIdx, status);
-
-  let pct = computeProgressPct(task, activeIdx, status);
-  if (status !== "done") {
-    pct = Math.max(progressHighWater.pct, pct);
-  }
-  progressHighWater.pct = pct;
-  const stepLabel = activeIdx >= 0 ? PIPELINE_STEPS[activeIdx]?.label : "排队中";
-  if (proc?.progFill) {
-    proc.progFill.style.width = `${pct}%`;
-    proc.progFill.classList.toggle("is-complete", status === "done" || pct >= 100);
-  }
-  if (proc?.progPct) proc.progPct.textContent = `${Math.round(pct)}%`;
-  if (proc?.panel) {
-    proc.panel.classList.toggle("is-pending", status === "pending" || isStepQueued);
-    proc.panel.classList.toggle("is-processing", status === "processing" && !isStepQueued);
-  }
-  if (proc?.progLabel) {
-    if (status === "done") proc.progLabel.textContent = "已完成";
-    else if (isStepQueued) {
-      proc.progLabel.textContent = pm.detail || "排队等待";
-    } else {
-      proc.progLabel.textContent = taskRunningStatusLabel(task) || stepLabel;
-    }
-  }
-
-  if (status === "pending" || status === "processing") {
-    let statusText = `任务 #${task.id} · ${taskRunningStatusLabel(task) || stepLabel}`;
-    if (status === "pending" && (Number(task.queue_ahead) || 0) > 0) {
-      statusText = `任务 #${task.id} · 排队中（前面还有 ${task.queue_ahead} 个）`;
-    }
-    if (task.progress_notice) {
-      statusText += ` · ${task.progress_notice.replace(/^resume:/, "")}`;
-    }
-    showStatus(statusText);
-  }
-}
-
-function stopProcAnim() {
-  if (procAnim) {
-    procAnim();
-    procAnim = null;
-  }
-  procAnimTaskId = null;
-}
-
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-  pollingTaskId = null;
-}
-
-function scheduleProcAnim(task) {
-  if (!task || !taskIsActive(task.status)) return;
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      if (viewingTaskId !== task.id) return;
-      if (!getProcElements()?.canvas) return;
-      if (procAnim && procAnimTaskId === task.id) {
-        updateProcProgress(task);
-        return;
-      }
-      procAnimTaskId = task.id;
-      if (progressHighWater.taskId !== task.id) {
-        resetProgressHighWater(task.id);
-      }
-      startProcessingAnim();
-      updateProcProgress(task);
-    });
-  });
-}
-
-function startProcessingAnim() {
-  stopProcAnim();
-  procAnimTaskId = viewingTaskId;
-  const proc = getProcElements();
-  if (!proc?.canvas || !proc.progFill) return;
-  proc.stages.forEach((s) => s.classList.remove("active", "done"));
-  const resumePct = progressHighWater.taskId === viewingTaskId ? progressHighWater.pct : 0;
-  proc.progFill.style.width = `${resumePct}%`;
-  proc.progFill.classList.remove("is-complete");
-  if (proc.progPct) proc.progPct.textContent = `${Math.round(resumePct)}%`;
-  if (proc.progLabel) proc.progLabel.textContent = "排队中";
-  animStageIdx = 0;
-  metricTarget = { activity: 0.1, cpu: 0, network_kbps: 0, kind: "idle", detail: "排队中…", facts: [], title_snip: "" };
-  metricDisplay = { ...metricTarget };
-  resetStageMetas();
-  updateStageMetas({ detail: "排队中" }, 0, "pending");
-
-  const canvas = proc.canvas;
-  const effector = window.ProcEffect?.create(canvas, { wrap: canvas.parentElement });
-  if (!effector) return;
-
-  let running = true;
-  let loadRaf = 0;
-
-  function tickLoad() {
-    loadRaf = 0;
-    if (!running) return;
-    const liveProc = getProcElements();
-    if (!liveProc?.canvas || liveProc.canvas !== canvas) {
-      loadRaf = requestAnimationFrame(tickLoad);
-      return;
-    }
-    lerpMetrics();
-    const step = PIPELINE_STEPS[animStageIdx]?.key || "parse";
-    effector.setLoad(window.ProcEffect.computeLoad(metricDisplay, step));
-    loadRaf = requestAnimationFrame(tickLoad);
-  }
-
-  function onVis() {
-    if (!running) return;
-    if (!document.hidden && !loadRaf) loadRaf = requestAnimationFrame(tickLoad);
-  }
-
-  document.addEventListener("visibilitychange", onVis);
-  loadRaf = requestAnimationFrame(tickLoad);
-
-  procAnim = () => {
-    running = false;
-    document.removeEventListener("visibilitychange", onVis);
-    if (loadRaf) cancelAnimationFrame(loadRaf);
-    loadRaf = 0;
-    effector.destroy();
-  };
-}
-
-function stopProcessingAnim(flash = false) {
-  const proc = getProcElements();
-  if (flash && proc?.panel) {
-    proc.panel.classList.remove("flash");
-    void proc.panel.offsetWidth;
-    proc.panel.classList.add("flash");
-    proc.stages.forEach((s) => s.classList.remove("active"));
-    proc.stages.forEach((s) => s.classList.add("done"));
-    if (proc.progFill) {
-      proc.progFill.style.width = "100%";
-      proc.progFill.classList.add("is-complete");
-    }
-    if (proc.progPct) proc.progPct.textContent = "100%";
-    if (proc.progLabel) proc.progLabel.textContent = "已完成";
-  }
-  stopProcAnim();
-}
-
-function startPolling(taskId) {
-  stopPolling();
-  pollingTaskId = taskId;
-  // 仅当用户尚未在看别的任务时，才把结果区切到该任务
-  if (viewingTaskId == null || viewingTaskId === taskId) {
-    viewingTaskId = taskId;
-    currentTaskId = taskId;
-  }
-  let cardRendered = viewingTaskId === taskId;
-
-  const tick = async () => {
-    if (pollingTaskId !== taskId) return;
-    try {
-      const task = await fetchTask(taskId);
-      if (pollingTaskId !== taskId) return;
-
-      const viewingThis = viewingTaskId === taskId;
-      if (viewingThis) {
-        if (!cardRendered) {
-          renderTask(task);
-          cardRendered = true;
-          scheduleProcAnim(task);
-        } else if (task.status === "done" || task.status === "failed") {
-          renderTask(task, task.status === "done");
-        } else {
-          patchTaskStatus(task);
-        }
-      }
-
-      // 进度面板始终跟随后台任务
-      updateProcProgress(task);
-      patchHistoryCard(task);
-
-      if (task.status === "done") {
-        stopPolling();
-        submitBtn.disabled = false;
-        loadHistory();
-      if (viewingTaskId === taskId) {
-        stopProcessingAnim(true);
-        hideStatus();
-        setTimeout(() => openTaskModal(task, true), 380);
-      } else {
-          stopProcessingAnim(false);
-          showStatus(`任务 #${taskId} 已完成（可在历史中查看）`);
-        }
-      } else if (task.status === "failed") {
-        stopPolling();
-        stopProcessingAnim(false);
-        submitBtn.disabled = false;
-        loadHistory();
-        const err = task.error_message || "任务失败，可点击重试";
-        if (viewingTaskId === taskId) {
-          showStatus(`失败：${err}`);
-          renderTask(task);
-        } else {
-          showStatus(`任务 #${taskId} 失败：${err}`);
-        }
-      }
-    } catch (err) {
-      if (pollingTaskId !== taskId) return;
-      if (isTransientFetchError(err)) {
-        if (viewingTaskId === taskId) showStatus("连接中断，正在重试…");
-        return;
-      }
-      stopPolling();
-      stopProcessingAnim(false);
-      submitBtn.disabled = false;
-      showStatus(err.message || "轮询失败");
-    }
-  };
-
-  tick();
-  pollTimer = setInterval(tick, 800);
-}
-
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const url = urlInput.value.trim();
-  if (!url) {
-    urlInput.classList.remove("shake");
-    void urlInput.offsetWidth;
-    urlInput.classList.add("shake");
-    urlInput.focus();
-    return;
-  }
-
-  submitBtn.disabled = true;
-  showStatus("提交中…");
-
-  try {
-    const res = await fetch(SUBTITLES_API, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
-    const { data, status } = await parseJsonResponse(res);
-    if (status === 400) throw new Error(data.detail || "提交失败");
-    if (status === 429) {
-      const msg = data.detail || "当前已有进行中的提取任务，请等待完成";
-      if (data.active_id) {
-        showStatus(`${msg}（#${data.active_id}）`);
-        startPolling(data.active_id);
-      } else {
-        showStatus(msg);
-      }
-      submitBtn.disabled = false;
-      return;
-    }
-
-    const task = subtitleToView(data);
-    const cached = data.cached;
-    renderTask(task);
-
-    if (task.status === "done") {
-      showStatus(cached ? "命中缓存，直接返回已有结果" : "已完成");
-      submitBtn.disabled = false;
-      renderTask(task, true);
-      loadHistory();
-      urlInput.value = "";
-    } else if (task.status === "failed") {
-      showStatus(task.error_message ? `失败：${task.error_message}` : "任务失败，可点击重试");
-      submitBtn.disabled = false;
-    } else {
-      startPolling(task.id);
-    }
-  } catch (err) {
-    showStatus(err.message);
-    submitBtn.disabled = false;
-  }
-});
-
-async function openHistoryDetail(taskId, ev) {
-  if (ev) {
-    ev.stopPropagation();
-    miniBurst(ev.clientX, ev.clientY);
-  }
-  try {
-    const task = await fetchTask(taskId);
-    viewingTaskId = task.id;
-    currentTaskId = task.id;
-    openTaskModal(task, true);
-    if (task.status === "pending" || task.status === "processing") {
-      startPolling(task.id);
-    }
-  } catch (err) {
-    showStatus(err.message || "加载失败");
-  }
-}
-
-function createHistoryBlock(view) {
-  const plat = platformClass(view.platform);
-  const block = document.createElement("article");
-  block.className = `m-card hist-card ${histStatusClass(view.status, view)} ${plat}`;
-  block.dataset.taskId = view.id;
-
-  const titleText = historyTitleLabel(view);
-  const shortTitle =
-    titleText.length > 72 ? `${escapeHtml(titleText.slice(0, 72))}…` : escapeHtml(titleText);
-  const author = historyAuthorLabel(view);
-  const authorHtml = author
-    ? author.length > 28
-      ? `${escapeHtml(author.slice(0, 28))}…`
-      : escapeHtml(author)
-    : `<span class="hist-card-author-muted">未知播主</span>`;
-
-  const transcriptText = historyTranscriptText(view);
-  const actionBtns = [];
-  if (hasHistoryTranscript(view)) {
-    actionBtns.push(histActionBtn("primary", "复制口播文稿", ICON_COPY));
-  }
-  if (canDownloadVideo(view.status)) {
-    actionBtns.push(histActionBtn("ghost", "下载视频", ICON_DOWNLOAD));
-  }
-  const actionsHtml = actionBtns.length
-    ? `<div class="hist-card-actions">${actionBtns.join("")}</div>`
-    : "";
-
-  const durationLabel = taskDurationLabel(view);
-  const durationHtml = durationLabel
-    ? `<span class="hist-card-duration">${escapeHtml(durationLabel)}</span>`
-    : "";
-
-  block.innerHTML = `
-    <div class="m-card-shell hist-card-shell">
-      <div class="hist-card-top">
-        ${renderPlatformAvatarCol(view.platform, historyAvatarInner(view))}
-        <div class="hist-card-main">
-          <strong class="m-card-name hist-card-title">${shortTitle}</strong>
-          <div class="hist-card-meta">
-            ${histCardStatusHtml(view)}
-            <span class="hist-card-author">${authorHtml}</span>
-            ${durationHtml}
-            <span class="hist-card-task-id">#${escapeHtml(String(view.id))}</span>
-          </div>
-        </div>
-        ${actionsHtml}
-      </div>
-    </div>`;
-
-  block.addEventListener("click", (e) => openHistoryDetail(view.id, e));
-
-  block.querySelector(".hist-act-primary")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    copyToClipboard(transcriptText, e.currentTarget);
-  });
-
-  block.querySelector(".hist-act-ghost")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    triggerVideoDownload(view.id, e.currentTarget);
-  });
-
-  const avImg = block.querySelector(".m-avatar-img");
-  if (avImg) {
-    avImg.addEventListener("error", () => {
-      avImg.remove();
-    });
-  }
-
-  return block;
-}
-
-let historyRefreshTimer = null;
-let historyListSnapshotCache = "";
-
-function historyListSnapshot(items) {
-  return JSON.stringify(
-    items.map((item) => {
-      const v = subtitleToView(item);
-      return {
-        id: v.id,
-        status: v.status,
-        progress_step: v.progress_step,
-        title: v.title,
-        author_name: v.author_name,
-        duration_sec: v.duration_sec,
-        has_transcript: hasTranscript(v) ? 1 : 0,
-      };
-    })
-  );
-}
-
-function patchHistoryListFromViews(views) {
-  if (!historyList) return false;
-  const cards = [...historyList.querySelectorAll(".hist-card")];
-  if (cards.length !== views.length) return false;
-  const byId = new Map(cards.map((c) => [c.dataset.taskId, c]));
-  for (const view of views) {
-    if (!byId.has(String(view.id))) return false;
-    patchHistoryCard(view);
-  }
-  return true;
-}
-
-function historyHasActiveCards() {
-  return !!historyList?.querySelector(".hist-pending, .hist-processing");
-}
-
-function scheduleHistoryAutoRefresh() {
-  if (historyRefreshTimer) return;
-  historyRefreshTimer = setInterval(async () => {
-    if (!historyHasActiveCards()) {
-      clearInterval(historyRefreshTimer);
-      historyRefreshTimer = null;
-      return;
-    }
-    try {
-      await loadHistory({ silent: true });
-    } catch {
-      /* ignore */
-    }
-  }, 6000);
-}
-
-async function loadHistory(options = {}) {
-  const silent = options.silent === true;
-  try {
-    const res = await fetch(`${SUBTITLES_API}?limit=${HISTORY_DISPLAY_LIMIT}`);
-    const { data, status } = await parseJsonResponse(res);
-    if (status !== 200) {
-      if (!silent) historyList.innerHTML = '<div class="m-empty"><p>加载失败</p></div>';
-      return;
-    }
-
-    const items = data.items || [];
-    const snap = historyListSnapshot(items);
-    const views = items.map((item) => subtitleToView(item));
-
-    if (silent) {
-      if (patchHistoryListFromViews(views)) {
-        historyListSnapshotCache = snap;
-        return;
-      }
-      if (historyListSnapshotCache === snap && historyList.querySelector(".hist-card")) {
-        return;
-      }
-    }
-
-    historyListSnapshotCache = snap;
-    historyList.innerHTML = "";
-
-    if (!items.length) {
-      historyList.innerHTML = `
-        <div class="m-empty m-empty-lg">
-          <div class="m-empty-icon" aria-hidden="true">◌</div>
-          <p>暂无记录</p>
-          <span>提交视频链接后，提取结果会出现在这里</span>
-        </div>`;
-      return;
-    }
-
-    for (const view of views) {
-      historyList.appendChild(createHistoryBlock(view));
-    }
-    if (historyHasActiveCards()) scheduleHistoryAutoRefresh();
-  } catch {
-    if (!silent) historyList.innerHTML = '<div class="m-empty"><p>加载失败</p></div>';
-  }
-}
-
-async function handleRetry(taskId) {
-  submitBtn.disabled = true;
-  showStatus("正在重新排队…");
-  try {
-    const task = await retryTask(taskId);
-    renderTask(task);
-    startPolling(task.id);
-  } catch (err) {
-    showStatus(err.message);
-    submitBtn.disabled = false;
-  }
-}
-
-refreshHistoryBtn.addEventListener("click", (e) => {
-  miniBurst(e.clientX, e.clientY);
-  historyList.querySelectorAll(".hist-card").forEach((el, i) => {
-    el.style.transition = "opacity .25s ease";
-    el.style.opacity = "0.35";
-    setTimeout(() => {
-      el.style.opacity = "1";
-    }, 120 + i * 40);
-  });
-  loadHistory();
-});
-
-submitBtn.addEventListener("click", (e) => {
-  if (!submitBtn.disabled) miniBurst(e.clientX, e.clientY);
-});
-
-initTaskModal();
 loadHistory();

@@ -28,6 +28,8 @@ class TaskContext:
     author_name: str = ""
     avatar_url: str = ""
     download_url: str = ""
+    published_at: str = ""
+    like_count: int = 0
     raw_transcript: str = ""
     corrected_transcript: str = ""
     transcript_source: str = "none"
@@ -54,6 +56,8 @@ class TaskContext:
             author_name=(task.get("author_name") or opts.saved_author_name or "").strip(),
             avatar_url=(task.get("avatar_url") or opts.saved_avatar_url or "").strip(),
             download_url=(task.get("download_url") or opts.saved_download_url or "").strip(),
+            published_at=(task.get("published_at") or "").strip(),
+            like_count=int(task.get("like_count") or 0),
             raw_transcript=raw,
             corrected_transcript=(task.get("corrected_transcript") or "").strip(),
             transcript_source="stt" if raw else "none",

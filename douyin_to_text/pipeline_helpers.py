@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,15 +39,28 @@ def avatar_from_douyin_detail(detail: dict[str, Any]) -> str:
 
 
 def avatar_from_ytdlp_info(info: dict[str, Any]) -> str:
+    if not info:
+        return ""
     for key in ("uploader_avatar", "channel_avatar", "avatar"):
         val = info.get(key)
         if isinstance(val, str) and val.strip():
             return val.strip()
     thumbs = info.get("thumbnails") or []
     if isinstance(thumbs, list):
-        for item in reversed(thumbs):
-            if isinstance(item, dict) and item.get("url"):
+        for item in thumbs:
+            if not isinstance(item, dict) or not item.get("url"):
+                continue
+            tid = str(item.get("id") or "").lower()
+            if "avatar" in tid:
                 return str(item["url"])
+        for item in reversed(thumbs):
+            if not isinstance(item, dict) or not item.get("url"):
+                continue
+            url = str(item["url"])
+            # 跳过频道横幅，优先方形头像
+            if "fcrop64" in url and "s900" not in url and "s0" not in url.split("=")[-1]:
+                continue
+            return url
     return ""
 
 
@@ -63,6 +77,62 @@ def download_url_from_ytdlp_info(info: dict[str, Any]) -> str:
             if url and fmt.get("vcodec") not in (None, "none"):
                 return str(url)
     return ""
+
+
+def published_at_from_ytdlp_info(info: dict[str, Any]) -> str:
+    """yt-dlp info 中的 upload_date / timestamp → ISO 8601 UTC。"""
+    if not info:
+        return ""
+    for key in ("timestamp", "release_timestamp"):
+        ts = info.get(key)
+        if ts is not None:
+            try:
+                return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+            except (TypeError, ValueError, OSError):
+                continue
+    for key in ("upload_date", "release_date"):
+        raw = info.get(key)
+        if not raw:
+            continue
+        s = str(raw).strip()
+        if len(s) >= 8 and s[:8].isdigit():
+            try:
+                return datetime.strptime(s[:8], "%Y%m%d").replace(tzinfo=timezone.utc).isoformat()
+            except ValueError:
+                continue
+    return ""
+
+
+def like_count_from_ytdlp_info(info: dict[str, Any]) -> int:
+    if not info:
+        return 0
+    for key in ("like_count", "likes"):
+        val = info.get(key)
+        if val is None:
+            continue
+        try:
+            return max(0, int(val))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def engagement_from_ytdlp_info(info: dict[str, Any]) -> tuple[int, int, int]:
+    """(like_count, comment_count, play_count)"""
+    like = like_count_from_ytdlp_info(info)
+    comment = 0
+    play = 0
+    try:
+        if info.get("comment_count") is not None:
+            comment = max(0, int(info["comment_count"]))
+    except (TypeError, ValueError):
+        comment = 0
+    try:
+        if info.get("view_count") is not None:
+            play = max(0, int(info["view_count"]))
+    except (TypeError, ValueError):
+        play = 0
+    return like, comment, play
 
 
 def skip_stt_steps(prog: ProgressCallback, tel: PipelineTelemetry) -> None:

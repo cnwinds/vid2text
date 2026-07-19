@@ -172,37 +172,46 @@ def download_video(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     headers = {**DOUYIN_DOWNLOAD_HEADERS, "Referer": referer}
-    with httpx.stream(
-        "GET",
-        video_url,
-        headers=headers,
-        follow_redirects=True,
-        timeout=timeout,
-    ) as resp:
-        resp.raise_for_status()
-        total = int(resp.headers.get("content-length") or 0)
-        downloaded = 0
-        started = time.monotonic()
-        last_report = 0.0
-        with output_path.open("wb") as f:
-            for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                f.write(chunk)
-                downloaded += len(chunk)
-                if on_progress:
-                    now = time.monotonic()
-                    if now - last_report >= 0.35:
-                        elapsed = now - started
-                        speed = downloaded / elapsed if elapsed > 0 else 0.0
-                        on_progress(downloaded, total, speed)
-                        last_report = now
-        if on_progress:
-            elapsed = time.monotonic() - started
-            speed = downloaded / elapsed if elapsed > 0 else 0.0
-            on_progress(downloaded, total, speed)
-    if not output_path.exists() or output_path.stat().st_size == 0:
-        raise RuntimeError("视频下载失败或文件为空")
-    _validate_video_file(output_path)
-    return output_path
+    downloaded = 0
+    total = 0
+    try:
+        with httpx.stream(
+            "GET",
+            video_url,
+            headers=headers,
+            follow_redirects=True,
+            timeout=timeout,
+        ) as resp:
+            resp.raise_for_status()
+            total = int(resp.headers.get("content-length") or 0)
+            started = time.monotonic()
+            last_report = 0.0
+            with output_path.open("wb") as f:
+                for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if on_progress:
+                        now = time.monotonic()
+                        if now - last_report >= 0.35:
+                            elapsed = now - started
+                            speed = downloaded / elapsed if elapsed > 0 else 0.0
+                            on_progress(downloaded, total, speed)
+                            last_report = now
+            if on_progress:
+                elapsed = time.monotonic() - started
+                speed = downloaded / elapsed if elapsed > 0 else 0.0
+                on_progress(downloaded, total, speed)
+        if total > 0 and downloaded < total:
+            raise RuntimeError(
+                f"视频下载不完整（{downloaded}/{total} 字节），请重试"
+            )
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            raise RuntimeError("视频下载失败或文件为空")
+        _validate_video_file(output_path)
+        return output_path
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
 
 
 def extract_audio(video_path: Path, audio_path: Path | None = None) -> Path:

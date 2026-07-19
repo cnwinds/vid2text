@@ -11,6 +11,7 @@
     onStatus: () => {},
     onStatusHide: () => {},
     onTaskDone: () => {},
+    onPoll: () => {},
     setSubmitDisabled: () => {},
   };
 
@@ -59,6 +60,7 @@ const PIPELINE_STEPS = [
   { key: "correct", label: "文本修正" },
 ];
 
+const STEP_INDEX = Object.fromEntries(PIPELINE_STEPS.map((s, i) => [s.key, i]));
 
 function taskIsActive(status) {
   return status === "pending" || status === "processing";
@@ -373,6 +375,10 @@ function buildTaskHeroHtml(task) {
   const publishedHtml = publishedLabel
     ? `<time class="td-hero-published" datetime="${escapeHtml(task.published_at || "")}">${escapeHtml(publishedLabel)}</time>`
     : "";
+  const likeLabel = taskLikeLabel(task);
+  const likeHtml = likeLabel
+    ? `<span class="td-hero-like" title="点赞">${escapeHtml(likeLabel)}</span>`
+    : "";
   return `
     <header class="td-hero">
       ${renderPlatformAvatarCol(task.platform, historyAvatarInner(task))}
@@ -381,6 +387,7 @@ function buildTaskHeroHtml(task) {
         <p class="td-hero-meta">
           <span class="td-hero-author">${escapeHtml(author)}</span>
           ${publishedHtml}
+          ${likeHtml}
           ${durationHtml}
           <span class="td-hero-task-id">#${escapeHtml(String(task.id))}</span>
         </p>
@@ -454,8 +461,19 @@ function buildTaskExtrasHtml(task) {
 }
 
 function buildTaskModalFootHtml(task) {
-  if (task.status !== "failed") return "";
-  return `<div class="m-modal-actions"><button type="button" class="td-act td-act-danger" id="modal-retry-btn">${RETRY_SVG}<span>重新提取</span></button></div>`;
+  if (task.status === "failed") {
+    return `<div class="m-modal-actions"><button type="button" class="td-act td-act-danger" id="modal-retry-btn">${RETRY_SVG}<span>重新提取</span></button></div>`;
+  }
+  if (shouldForceMediaRetry(task)) {
+    return `<div class="m-modal-actions"><button type="button" class="td-act td-act-danger" id="modal-retry-btn">${RETRY_SVG}<span>重新下载</span></button></div>`;
+  }
+  return "";
+}
+
+function shouldForceMediaRetry(task) {
+  if (!task || !taskIsActive(task.status)) return false;
+  const step = String(task.progress_step || "").trim();
+  return step === "download" || step === "extract_audio";
 }
 
 function syncTaskModalFoot(task) {
@@ -515,8 +533,10 @@ function bindTaskModalActions(task) {
   const retryBtn = document.getElementById("modal-retry-btn");
   if (retryBtn) {
     retryBtn.addEventListener("click", (e) => {
-      global.miniBurst(e.clientX, e.clientY);
-      handleRetryTask(task.id);
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof global.miniBurst === "function") global.miniBurst(e.clientX, e.clientY);
+      handleRetryTask(task);
     });
   }
 
@@ -532,7 +552,9 @@ function bindTaskModalActions(task) {
   const dlBtn = document.getElementById("modal-dl-btn");
   if (dlBtn) {
     dlBtn.addEventListener("click", (e) => {
-      global.miniBurst(e.clientX, e.clientY);
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof global.miniBurst === "function") global.miniBurst(e.clientX, e.clientY);
       triggerVideoDownload(task.id, dlBtn);
     });
   }
@@ -667,6 +689,9 @@ function patchTaskStatus(task) {
     taskModalBody.innerHTML = buildTaskDetailHtml(task);
     syncTaskModalFoot(task);
     bindTaskModalActions(task);
+  } else {
+    syncTaskModalFoot(task);
+    bindTaskModalActions(task);
   }
 }
 
@@ -692,6 +717,7 @@ function subtitleToView(data) {
     download_url: v.download_url || "",
     duration_sec: Number(v.duration_sec) || 0,
     published_at: v.published_at || "",
+    like_count: Number(v.like_count) || 0,
     raw_transcript: sub.raw || "",
     corrected_transcript: sub.corrected || "",
     error_message: data.error || "",
@@ -747,11 +773,18 @@ async function fetchTask(taskId) {
   return subtitleToView(data);
 }
 
-async function retryTask(taskId) {
-  const res = await fetch(`${SUBTITLES_API}/${taskId}/retry`, { method: "POST" });
+async function retryTask(taskId, taskHint) {
+  const force = taskHint && shouldForceMediaRetry(taskHint);
+  const url = `${SUBTITLES_API}/${taskId}/retry${force ? "?force=1" : ""}`;
+  const res = await fetch(url, { method: "POST" });
   const { data, status } = await parseJsonResponse(res);
   if (status === 400 || status === 404) {
     throw new Error(data.detail || "重试失败");
+  }
+  if (status === 429) {
+    const activeId = data.active_id || data.processing?.id;
+    const msg = data.detail || "当前已有进行中的提取任务";
+    throw new Error(activeId ? `${msg}（#${activeId}）` : msg);
   }
   return subtitleToView(data);
 }
@@ -1026,6 +1059,7 @@ function startPolling(taskId) {
 
       // 进度面板始终跟随后台任务
       updateProcProgress(task);
+      hooks.onPoll(task);
 
       if (task.status === "done") {
         stopPolling();
@@ -1069,16 +1103,30 @@ function startPolling(taskId) {
   pollTimer = setInterval(tick, 800);
 }
 
-  async function handleRetryTask(taskId) {
+  async function handleRetryTask(task) {
+    const taskId = task.id;
+    const retryBtn = document.getElementById("modal-retry-btn");
     hooks.setSubmitDisabled(true);
-    showStatus("正在重新排队…");
+    if (retryBtn) retryBtn.disabled = true;
+    showStatus(shouldForceMediaRetry(task) ? "正在重新下载…" : "正在重新排队…");
     try {
-      const task = await retryTask(taskId);
-      renderTask(task);
-      startPolling(task.id);
+      resetProgressHighWater(taskId);
+      const next = await retryTask(taskId, task);
+      renderTask(next);
+      startPolling(next.id);
+      const ahead = Number(next.queue_ahead) || 0;
+      if (next.status === "pending" && ahead > 0) {
+        showStatus(`已重新排队，前面还有 ${ahead} 个任务…`);
+      } else if (taskIsActive(next.status)) {
+        showStatus(`任务 #${taskId} 已开始处理…`);
+      } else if (next.status === "failed") {
+        showStatus(next.error_message ? `失败：${next.error_message}` : "重试失败");
+      }
     } catch (err) {
-      showStatus(err.message);
+      showStatus(err.message || "重试失败");
       hooks.setSubmitDisabled(false);
+    } finally {
+      if (retryBtn) retryBtn.disabled = false;
     }
   }
 
@@ -1107,7 +1155,10 @@ function startPolling(taskId) {
       viewingTaskId = task.id;
       currentTaskId = task.id;
       openTaskModal(task, true);
-      if (taskIsActive(task.status)) startPolling(task.id);
+      if (taskIsActive(task.status)) {
+        updateProcProgress(task);
+        startPolling(task.id);
+      }
     } catch (err) {
       showStatus(err.message || "加载失败");
     }
@@ -1125,9 +1176,19 @@ function startPolling(taskId) {
     close: closeTaskModal,
     fetchTask,
     subtitleToView,
+    parseJsonResponse,
     startPolling,
     stopPolling,
     renderTask,
     taskIsActive,
+    hasTranscript,
+    taskTranscriptText,
+    canDownloadVideo,
+    copyToClipboard,
+    triggerVideoDownload,
+    historyTitleLabel,
+    historyAuthorLabel,
+    historyAvatarInner,
+    SUBTITLES_API,
   };
 })(window);

@@ -38,6 +38,7 @@ class VideoRef(BaseModel):
     download_url: str = Field("", description="视频直链（CDN），可用于下载")
     duration_sec: float = Field(0, description="视频时长（秒）")
     published_at: str = Field("", description="作品发布时间（ISO 8601，如有）")
+    like_count: int = Field(0, description="点赞数（如有）")
 
 
 class DownloadUrlResponse(BaseModel):

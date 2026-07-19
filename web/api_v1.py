@@ -44,6 +44,7 @@ from web.services import (
     row_to_subtitle,
     submit_url,
     subtitle_http_status,
+    task_needs_media_cache_clear,
 )
 from web.rate_limit import RateLimitError, get_client_ip
 from web.work_cache import work_cache_public, clear_video_cache
@@ -377,13 +378,25 @@ async def retry_subtitles(
     req_id: int,
     request: Request,
     fresh: bool = Query(False, description="为 true 时清空进度与缓存元数据，从头提取"),
+    force: bool = Query(False, description="为 true 时强制重启进行中的多媒体任务"),
 ) -> Response:
     client_ip = get_client_ip(request)
     existing = db.get_task(req_id)
     if not existing:
         raise HTTPException(status_code=404, detail="请求不存在")
     if existing["status"] in ("pending", "processing"):
-        return _subtitle_response(existing, request)
+        if not force:
+            return _subtitle_response(existing, request)
+        try:
+            check_ip_rate_limit(client_ip, exclude_id=req_id)
+        except RateLimitError as exc:
+            payload = rate_limit_payload(exc.active_task, _base_url(request))
+            return JSONResponse(status_code=429, content=payload)
+        clear_video_cache(existing.get("video_id") or "")
+        row = db.restart_media_extraction(req_id)
+        if not row:
+            raise HTTPException(status_code=400, detail="重试失败")
+        return _subtitle_response(row, request)
     if existing["status"] != "failed":
         raise HTTPException(status_code=400, detail="仅失败记录可重试")
     try:
@@ -392,9 +405,15 @@ async def retry_subtitles(
         payload = rate_limit_payload(exc.active_task, _base_url(request))
         return JSONResponse(status_code=429, content=payload)
 
-    if fresh:
+    media_retry = task_needs_media_cache_clear(existing)
+    if fresh or media_retry:
         clear_video_cache(existing.get("video_id") or "")
-    row = db.retry_task(req_id, fresh=fresh)
+    if fresh:
+        row = db.retry_task(req_id, fresh=True)
+    elif media_retry:
+        row = db.restart_media_extraction(req_id)
+    else:
+        row = db.retry_task(req_id, fresh=False)
     if not row:
         raise HTTPException(status_code=400, detail="重试失败")
     return _subtitle_response(row, request)

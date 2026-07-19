@@ -9,6 +9,19 @@ from typing import Any
 from web import db
 from douyin_to_text.pipeline_resume import step_index
 
+_TASK_EXTRA_KEYS = (
+    "title",
+    "description",
+    "author_name",
+    "avatar_url",
+    "download_url",
+    "raw_transcript",
+    "published_at",
+    "like_count",
+)
+_MONITOR_ENGAGEMENT_KEYS = ("comment_count", "play_count")
+_INT_EXTRA_KEYS = frozenset({"like_count", "comment_count", "play_count"})
+
 
 class TaskProgressReporter:
     """Pipeline on_progress 回调：步骤变更立即写入，指标更新节流。"""
@@ -31,12 +44,23 @@ class TaskProgressReporter:
     def __call__(self, step: str, metrics: dict[str, Any] | None = None) -> None:
         payload = dict(metrics or {})
         # 剥离内部 checkpoint 字段，不写入 progress_metrics JSON
-        extras: dict[str, Any] = {}
-        for key in ("title", "description", "author_name", "avatar_url", "download_url", "raw_transcript"):
-            if key in payload:
-                val = payload.pop(key)
-                if val is not None and str(val).strip():
-                    extras[key] = val
+        task_extras: dict[str, Any] = {}
+        engagement_extras: dict[str, Any] = {}
+        for key in _TASK_EXTRA_KEYS + _MONITOR_ENGAGEMENT_KEYS:
+            if key not in payload:
+                continue
+            val = payload.pop(key)
+            if key in _INT_EXTRA_KEYS:
+                try:
+                    parsed = max(0, int(val or 0))
+                except (TypeError, ValueError):
+                    continue
+                if key in _TASK_EXTRA_KEYS:
+                    task_extras[key] = parsed
+                else:
+                    engagement_extras[key] = parsed
+            elif val is not None and str(val).strip():
+                task_extras[key] = val
 
         payload["step"] = step
         now = time.monotonic()
@@ -48,11 +72,25 @@ class TaskProgressReporter:
             and new_idx >= 0
             and new_idx < self._floor_index
         ):
-            if extras:
-                db.update_task(self.task_id, **extras)
+            if task_extras:
+                db.update_task(self.task_id, **task_extras)
+            if task_extras or engagement_extras:
+                task = db.get_task(self.task_id) or {}
+                db.sync_monitor_video_engagement(
+                    str(task.get("platform") or ""),
+                    str(task.get("video_id") or ""),
+                    published_at=str(
+                        task_extras.get("published_at") or task.get("published_at") or ""
+                    ),
+                    like_count=int(
+                        task_extras.get("like_count") or task.get("like_count") or 0
+                    ),
+                    comment_count=int(engagement_extras.get("comment_count") or 0),
+                    play_count=int(engagement_extras.get("play_count") or 0),
+                )
             return
 
-        if step_changed or now - self._last_write >= self.min_interval or extras:
+        if step_changed or now - self._last_write >= self.min_interval or task_extras:
             fields: dict[str, Any] = {
                 "progress_step": step,
                 "progress_metrics": json.dumps(payload, ensure_ascii=False),
@@ -60,7 +98,21 @@ class TaskProgressReporter:
             dur = payload.get("duration_sec")
             if dur is not None and float(dur) > 0:
                 fields["duration_sec"] = float(dur)
-            fields.update(extras)
+            fields.update(task_extras)
             db.update_task(self.task_id, **fields)
+            if task_extras or engagement_extras:
+                task = db.get_task(self.task_id) or {}
+                db.sync_monitor_video_engagement(
+                    str(task.get("platform") or ""),
+                    str(task.get("video_id") or ""),
+                    published_at=str(
+                        task_extras.get("published_at") or task.get("published_at") or ""
+                    ),
+                    like_count=int(
+                        task_extras.get("like_count") or task.get("like_count") or 0
+                    ),
+                    comment_count=int(engagement_extras.get("comment_count") or 0),
+                    play_count=int(engagement_extras.get("play_count") or 0),
+                )
             self._last_step = step
             self._last_write = now
