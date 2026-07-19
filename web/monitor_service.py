@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -11,7 +12,9 @@ from douyin_to_text.author_models import AuthorProfile
 from douyin_to_text.author_resolver import resolve_author_from_url
 from web import db
 from web.client_scope import MONITOR_SCOPE
+from web.log_context import log_context
 from web.metadata_sync import sync_task_to_monitor_video
+from web.metrics_registry import observe_monitor_scan
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +217,15 @@ def _enqueue_video(monitor: dict[str, Any], video) -> int | None:
 
 def scan_monitor(monitor_id: int) -> dict[str, Any]:
     """执行一次扫描：补采或发现新作并入队。"""
+    with log_context(monitor_id=monitor_id):
+        started = time.monotonic()
+        try:
+            return _scan_monitor_impl(monitor_id)
+        finally:
+            observe_monitor_scan(time.monotonic() - started)
+
+
+def _scan_monitor_impl(monitor_id: int) -> dict[str, Any]:
     monitor = db.get_monitor(monitor_id)
     if not monitor:
         raise ValueError("监控不存在")

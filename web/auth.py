@@ -73,6 +73,21 @@ def verify_admin_password(password: str) -> bool:
     return secrets.compare_digest(password or "", expected)
 
 
+def admin_configured() -> bool:
+    return bool(admin_api_token() or admin_password())
+
+
+def require_admin_config() -> None:
+    """生产环境必须配置管理鉴权；测试可设 VID2TEXT_SKIP_ADMIN_CHECK=1。"""
+    if (os.environ.get("VID2TEXT_SKIP_ADMIN_CHECK") or "").strip() == "1":
+        return
+    if not admin_configured():
+        raise RuntimeError(
+            "未配置 ADMIN_PASSWORD 或 ADMIN_API_TOKEN。"
+            "请在 .env 中至少设置一项后重启服务。"
+        )
+
+
 def admin_password_configured() -> bool:
     return bool(admin_password())
 

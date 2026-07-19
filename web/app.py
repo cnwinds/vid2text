@@ -18,6 +18,7 @@ from web.auth import (
     admin_password_configured,
     issue_session_cookie_value,
     login_redirect_url,
+    require_admin_config,
     safe_admin_next,
     session_is_valid,
     verify_admin_password,
@@ -52,6 +53,7 @@ templates.env.globals["static_v"] = static_version
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    require_admin_config()
     db.init_db()
     start_worker()
     start_monitor_scanner()

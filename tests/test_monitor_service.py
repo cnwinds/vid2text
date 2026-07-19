@@ -2,32 +2,25 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from douyin_to_text.author_models import FeedVideo
+from tests._test_env import restore_db, use_temp_db
 
 
 class ScanMonitorTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self.tmp.close()
-        self.db_path = Path(self.tmp.name)
-        self.addCleanup(lambda: os.unlink(self.db_path) if self.db_path.exists() else None)
-
         import web.db as db_mod
         import web.db_connection as conn_mod
 
         self._orig_db = db_mod.DB_PATH
         self._orig_conn = conn_mod.DB_PATH
-        db_mod.DB_PATH = self.db_path
-        conn_mod.DB_PATH = self.db_path
-        db_mod.init_db()
+        self.db_path = use_temp_db()
 
-        self.monitor = db_mod.create_monitor(
+        from web import db
+
+        self.monitor = db.create_monitor(
             platform="youtube",
             author_key="UCtest",
             author_name="Test Channel",
@@ -40,8 +33,7 @@ class ScanMonitorTests(unittest.TestCase):
         import web.db as db_mod
         import web.db_connection as conn_mod
 
-        db_mod.DB_PATH = self._orig_db
-        conn_mod.DB_PATH = self._orig_conn
+        restore_db(self.db_path, self._orig_db, self._orig_conn)
 
     @patch("web.monitor_service.collect_feed_videos")
     def test_scan_syncs_metadata_and_enqueues_new_video(self, mock_collect) -> None:

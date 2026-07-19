@@ -1,0 +1,276 @@
+/* ---- history cards (home) ---- */
+.hist-card {
+  cursor: pointer;
+  border-width: 1.5px;
+}
+
+.hist-card.hist-done {
+  border-color: rgba(70, 224, 201, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(70, 224, 201, 0.06);
+}
+
+.hist-card.hist-pending {
+  border-color: rgba(245, 185, 66, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(245, 185, 66, 0.06);
+}
+
+.hist-card.hist-processing {
+  border-color: rgba(122, 162, 255, 0.48);
+  box-shadow:
+    inset 0 0 0 1px rgba(122, 162, 255, 0.08),
+    0 0 18px rgba(122, 162, 255, 0.06);
+}
+
+.hist-card.hist-pending:hover {
+  border-color: rgba(245, 185, 66, 0.58);
+  box-shadow: inset 0 0 0 1px rgba(245, 185, 66, 0.1);
+}
+
+.hist-card.hist-processing:hover {
+  border-color: rgba(122, 162, 255, 0.62);
+  box-shadow:
+    inset 0 0 0 1px rgba(122, 162, 255, 0.12),
+    0 0 22px rgba(122, 162, 255, 0.1);
+}
+
+.hist-card.hist-fail {
+  border-color: rgba(255, 93, 108, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(255, 93, 108, 0.05);
+}
+
+.hist-card.hist-done:hover {
+  border-color: rgba(70, 224, 201, 0.58);
+  box-shadow: inset 0 0 0 1px rgba(70, 224, 201, 0.1);
+}
+
+.hist-card.hist-fail:hover {
+  border-color: rgba(255, 93, 108, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(255, 93, 108, 0.08);
+}
+
+.hist-card .m-card-shell,
+.hist-card-shell {
+  align-items: stretch;
+}
+
+.hist-card-shell {
+  width: 100%;
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+.hist-card-top {
+  flex: 1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.hist-card-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.hist-card-title {
+  width: 100%;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.42;
+  letter-spacing: -0.01em;
+  text-align: left;
+}
+
+.hist-card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+  text-align: left;
+}
+
+.hist-card-status {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.hist-card-status-pending {
+  color: var(--queue);
+  background: rgba(245, 185, 66, 0.12);
+  border: 1px solid rgba(245, 185, 66, 0.32);
+}
+
+.hist-card-status-processing {
+  color: var(--active);
+  background: rgba(122, 162, 255, 0.12);
+  border: 1px solid rgba(122, 162, 255, 0.35);
+  animation: hist-status-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes hist-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hist-card-status-processing {
+    animation: none;
+  }
+}
+
+.hist-card-actions {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 6px;
+  padding-left: 10px;
+  align-self: stretch;
+}
+
+.hist-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-mid);
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.hist-act svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.hist-act:hover:not(:disabled) {
+  border-color: rgba(70, 224, 201, 0.32);
+  color: var(--text);
+  background: rgba(70, 224, 201, 0.06);
+}
+
+.hist-act:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.hist-act-primary {
+  border-color: rgba(70, 224, 201, 0.28);
+  background: rgba(70, 224, 201, 0.08);
+  color: var(--signal);
+}
+
+.hist-act-primary:hover:not(:disabled) {
+  background: rgba(70, 224, 201, 0.14);
+  border-color: rgba(70, 224, 201, 0.4);
+}
+
+.hist-act-ghost {
+  color: var(--text-dim);
+}
+
+.hist-card .m-avatar-col {
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.hist-card-author {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted, rgba(255, 255, 255, 0.62));
+}
+
+.hist-card-author-muted {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.hist-card-duration {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--text-mid);
+}
+
+.hist-card-published,
+.hist-card-like {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--text-mid);
+}
+
+.hist-card-duration::before,
+.hist-card-published::before,
+.hist-card-like::before {
+  content: "·";
+  margin-right: 10px;
+  opacity: 0.5;
+}
+
+.hist-card-task-id {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  opacity: 0.72;
+}
+
+.hist-card-task-id::before {
+  content: "·";
+  margin-right: 10px;
+  opacity: 0.5;
+}
+
+.hist-card-vid {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  opacity: 0.72;
+}
+
+.hist-card-vid::before {
+  content: "·";
+  margin-right: 10px;
+  opacity: 0.5;
+}
+
+.m-list-panel {
+  padding-top: 8px;
+}
+
+.m-list-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}

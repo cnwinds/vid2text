@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from web import db
+from web.metrics_registry import histogram_metric_lines
 
 
 def collect_metrics_lines() -> list[str]:
@@ -29,6 +30,7 @@ def collect_metrics_lines() -> list[str]:
     except Exception:
         pass
 
+    lines.extend(histogram_metric_lines())
     return lines
 
 

@@ -2,29 +2,22 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 import unittest
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from tests._test_env import restore_db, use_temp_db
+
 
 class ApiV1SmokeTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self.tmp.close()
-        self.db_path = Path(self.tmp.name)
-        self.addCleanup(lambda: os.unlink(self.db_path) if self.db_path.exists() else None)
-
         import web.db as db_mod
         import web.db_connection as conn_mod
 
         self._orig_db = db_mod.DB_PATH
         self._orig_conn = conn_mod.DB_PATH
-        db_mod.DB_PATH = self.db_path
-        conn_mod.DB_PATH = self.db_path
-        db_mod.init_db()
+        self.db_path = use_temp_db()
 
         from web.app import app
 
@@ -34,8 +27,7 @@ class ApiV1SmokeTests(unittest.TestCase):
         import web.db as db_mod
         import web.db_connection as conn_mod
 
-        db_mod.DB_PATH = self._orig_db
-        conn_mod.DB_PATH = self._orig_conn
+        restore_db(self.db_path, self._orig_db, self._orig_conn)
 
     def test_health(self) -> None:
         res = self.client.get("/health")

@@ -84,7 +84,7 @@ FastAPI (web/app.py)
 
 | 变量 | 说明 |
 |------|------|
-| `ADMIN_PASSWORD` | Web 管理页登录密码（`/monitors`、`/settings`） |
+| `ADMIN_PASSWORD` | Web 管理页登录密码（`/monitors`、`/settings`）；**与 `ADMIN_API_TOKEN` 至少配置一项，否则服务拒绝启动** |
 | `ADMIN_API_TOKEN` | Monitors / Settings API 鉴权（`Authorization: Bearer …` 或 `X-Admin-Token`） |
 | `PUBLIC_API_TOKEN` | （可选）字幕 API 鉴权；设置后 `POST/GET /api/v1/subtitles*` 需 `Bearer` 或 `X-Api-Token` |
 | `WORK_CACHE_QUOTA_GB` | work 缓存目录磁盘配额（GB），超限按最旧文件清理 |

@@ -15,6 +15,8 @@ from douyin_to_text.pipeline_types import PIPELINE_STEPS, PipelineOptions
 from douyin_to_text.step_config import load_pool_concurrency, pool_for_step
 from douyin_to_text.stt_engine import default_engine, default_model
 from web import db
+from web.log_context import log_context
+from web.metrics_registry import observe_pipeline_step
 from web.progress_reporter import TaskProgressReporter
 from web.work_cache import get_work_dir, maybe_enforce_work_cache_quota
 
@@ -161,6 +163,14 @@ class StepScheduler:
             return lock
 
     def _execute_step(self, task_id: int, step: str) -> None:
+        with log_context(task_id=task_id, step=step):
+            started = time.monotonic()
+            try:
+                self._execute_step_inner(task_id, step)
+            finally:
+                observe_pipeline_step(step, time.monotonic() - started)
+
+    def _execute_step_inner(self, task_id: int, step: str) -> None:
         with self._task_lock(task_id):
             task = db.get_task(task_id)
             if not task or task.get("status") != "processing":
