@@ -75,7 +75,10 @@ FastAPI (web/app.py)
             └── postprocess.py       ← 转录后处理（预留）
 ```
 
-`GET /health` 返回服务、数据库与调度器状态（无需鉴权）。
+`GET /health` 返回服务、数据库与调度器状态（无需鉴权）。  
+`GET /metrics` 返回 Prometheus 文本指标（任务数、资源池队列）。
+
+配置 `PUBLIC_API_TOKEN` 后，字幕 API 需鉴权，且历史列表/单条访问按 **Token 或 IP scope** 隔离。
 
 ### 环境变量
 
