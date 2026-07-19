@@ -90,6 +90,7 @@ FastAPI (web/app.py)
 | `WORK_CACHE_QUOTA_GB` | work 缓存目录磁盘配额（GB），超限按最旧文件清理 |
 | `STEP_CONCURRENCY_JSON` | 资源池并发 JSON，如 `{"download":1,"stt":1,"correct":1,"default":1}`；也可用 `STEP_<POOL>_CONCURRENCY` 单独设置 |
 | `YOUTUBE_ENRICH_MAX_CONCURRENT` | YouTube 监控扫描 lazy enrich 并发上限（默认 `2`） |
+| `MONITOR_SCANNER_MAX_WORKERS` | 监控 scanner 同时扫描账号数（默认 `2`） |
 | `YTDLP_YOUTUBE_MIN_INTERVAL_SEC` | 跨任务 YouTube yt-dlp 最小间隔秒数（默认 `6`） |
 | `LOG_FORMAT` | 日志格式：`text`（默认）或 `json` |
 | `LOG_LEVEL` | 日志级别（默认 `INFO`） |
