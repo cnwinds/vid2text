@@ -53,6 +53,8 @@ def issue_session_cookie_value() -> str:
 def session_is_valid(raw: str | None) -> bool:
     if not raw or "." not in raw:
         return False
+    if not (admin_api_token() or admin_password()):
+        return False
     payload_b64, sig = raw.rsplit(".", 1)
     if not secrets.compare_digest(_sign(payload_b64), sig):
         return False

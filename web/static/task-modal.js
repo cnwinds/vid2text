@@ -379,6 +379,10 @@ function buildTaskHeroHtml(task) {
   const likeHtml = likeLabel
     ? `<span class="td-hero-like" title="点赞">${escapeHtml(likeLabel)}</span>`
     : "";
+  const commentLabel = taskCommentLabel(task);
+  const commentHtml = commentLabel
+    ? `<span class="td-hero-comment" title="评论">${escapeHtml(commentLabel)}</span>`
+    : "";
   return `
     <header class="td-hero">
       ${renderPlatformAvatarCol(task.platform, historyAvatarInner(task))}
@@ -388,6 +392,7 @@ function buildTaskHeroHtml(task) {
           <span class="td-hero-author">${escapeHtml(author)}</span>
           ${publishedHtml}
           ${likeHtml}
+          ${commentHtml}
           ${durationHtml}
           <span class="td-hero-task-id">#${escapeHtml(String(task.id))}</span>
         </p>
@@ -718,6 +723,8 @@ function subtitleToView(data) {
     duration_sec: Number(v.duration_sec) || 0,
     published_at: v.published_at || "",
     like_count: Number(v.like_count) || 0,
+    comment_count: Number(v.comment_count) || 0,
+    play_count: Number(v.play_count) || 0,
     raw_transcript: sub.raw || "",
     corrected_transcript: sub.corrected || "",
     error_message: data.error || "",

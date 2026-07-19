@@ -342,3 +342,16 @@ def stop_scheduler() -> None:
 
 def is_scheduler_running() -> bool:
     return _scheduler is not None
+
+
+def scheduler_stats() -> dict[str, dict[str, int]]:
+    if _scheduler is None:
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    with _scheduler._pool_guard:
+        for pool, q in _scheduler._queues.items():
+            out[pool] = {
+                "active": int(_scheduler._pool_active.get(pool, 0)),
+                "queued": int(q.qsize()),
+            }
+    return out

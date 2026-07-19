@@ -35,6 +35,7 @@ from web.schemas import (
     VideoRef,
     WorkCachePublic,
 )
+from web.api_auth import require_public_api_auth
 from web.services import (
     check_ip_rate_limit,
     enrich_task_duration,
@@ -46,6 +47,11 @@ from web.services import (
     submit_url,
     subtitle_http_status,
     task_needs_media_cache_clear,
+)
+from web.client_scope import (
+    client_scope_from_request,
+    scope_filter_enabled,
+    task_visible_to_scope,
 )
 from web.rate_limit import RateLimitError, get_client_ip
 from web.work_cache import work_cache_public, clear_video_cache
@@ -59,6 +65,21 @@ router = APIRouter(
 
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
+
+
+def _list_scope(request: Request) -> str | None:
+    if not scope_filter_enabled():
+        return None
+    return client_scope_from_request(request)
+
+
+def _ensure_task_access(request: Request, row: dict | None) -> dict:
+    if not row:
+        raise HTTPException(status_code=404, detail="请求不存在")
+    scope = _list_scope(request)
+    if scope and not task_visible_to_scope(row, scope):
+        raise HTTPException(status_code=404, detail="请求不存在")
+    return row
 
 
 def _subtitle_payload(row: dict, request: Request, *, cached: bool = False) -> dict:
@@ -110,6 +131,7 @@ def _lookup_subtitle_by_url(url: str, request: Request) -> Response:
             detail="该视频尚无提取记录，请先 POST /api/v1/subtitles",
         )
     enrich_task_duration(row, persist=True)
+    row = _ensure_task_access(request, row)
     cached = row["status"] == "done"
     return _subtitle_response(row, request, cached=cached)
 
@@ -157,8 +179,9 @@ async def _wait_until_done(
 )
 async def obtain_subtitles(body: SubtitleRequest, request: Request) -> Response:
     client_ip = get_client_ip(request)
+    scope = client_scope_from_request(request)
     try:
-        row, cached = submit_url(body.url, client_ip=client_ip)
+        row, cached = submit_url(body.url, client_ip=client_ip, client_scope=scope)
     except RateLimitError as exc:
         payload = rate_limit_payload(exc.active_task, _base_url(request))
         return JSONResponse(status_code=429, content=payload)
@@ -210,9 +233,7 @@ async def get_subtitles_by_url(
     responses=GET_SUBTITLE_RESPONSES,
 )
 async def get_subtitles(req_id: int, request: Request) -> Response:
-    row = db.get_task(req_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="请求不存在")
+    row = _ensure_task_access(request, db.get_task(req_id))
     enrich_task_duration(row, persist=True)
     return _subtitle_response(row, request)
 
@@ -244,8 +265,9 @@ async def list_subtitles(
     if url:
         return _lookup_subtitle_by_url(url, request)
 
-    total = db.count_tasks()
-    rows = db.list_history(limit=limit, offset=offset)
+    scope = _list_scope(request)
+    total = db.count_tasks(client_scope=scope)
+    rows = db.list_history(limit=limit, offset=offset, client_scope=scope)
     for row in rows:
         enrich_task_duration(row, persist=False)
     items = [_as_subtitle_model(r, request) for r in rows]
@@ -277,10 +299,7 @@ async def get_subtitle_text(
         description="text=修正后优先；raw=原始；corrected=仅修正版",
     ),
 ) -> Response:
-    row = db.get_task(req_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="请求不存在")
-
+    row = _ensure_task_access(request, db.get_task(req_id))
     if row["status"] in ("pending", "processing"):
         payload = _subtitle_payload(row, request)
         return JSONResponse(status_code=202, content=payload)
@@ -315,10 +334,8 @@ async def get_subtitle_text(
     ),
     response_model=DownloadUrlResponse,
 )
-async def fetch_download_url(req_id: int) -> DownloadUrlResponse:
-    row = db.get_task(req_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="请求不存在")
+async def fetch_download_url(req_id: int, request: Request) -> DownloadUrlResponse:
+    _ensure_task_access(request, db.get_task(req_id))
     url, err = await asyncio.to_thread(resolve_download_url, req_id)
     if not url:
         raise HTTPException(status_code=422, detail=err or "未能解析视频直链")
@@ -341,11 +358,10 @@ async def fetch_download_url(req_id: int) -> DownloadUrlResponse:
 )
 async def download_subtitle_video(
     req_id: int,
+    request: Request,
     check: bool = Query(False, description="为 true 时仅校验，不下载文件"),
 ) -> Response:
-    row = db.get_task(req_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="请求不存在")
+    row = _ensure_task_access(request, db.get_task(req_id))
     if row["status"] not in ("done", "failed"):
         raise HTTPException(status_code=400, detail="任务尚未完成，暂不可下载视频")
     if check:
@@ -386,9 +402,7 @@ async def retry_subtitles(
     force: bool = Query(False, description="为 true 时强制重启进行中的多媒体任务"),
 ) -> Response:
     client_ip = get_client_ip(request)
-    existing = db.get_task(req_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="请求不存在")
+    existing = _ensure_task_access(request, db.get_task(req_id))
     if existing["status"] in ("pending", "processing"):
         if not force:
             return _subtitle_response(existing, request)

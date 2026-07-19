@@ -10,6 +10,7 @@ from douyin_to_text.author_feed import collect_feed_videos
 from douyin_to_text.author_models import AuthorProfile
 from douyin_to_text.author_resolver import resolve_author_from_url
 from web import db
+from web.client_scope import MONITOR_SCOPE
 from web.metadata_sync import sync_task_to_monitor_video
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,7 @@ def _enqueue_video(monitor: dict[str, Any], video) -> int | None:
             platform=platform,
             video_id=video.video_id,
             client_ip=MONITOR_CLIENT_IP,
+            client_scope=MONITOR_SCOPE,
             monitor_id=monitor["id"],
         )
         task_id = task["id"]

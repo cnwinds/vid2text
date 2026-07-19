@@ -172,6 +172,10 @@ function taskLikeLabel(task) {
   return fmtEngagementCount(task?.like_count);
 }
 
+function taskCommentLabel(task) {
+  return fmtEngagementCount(task?.comment_count);
+}
+
 /** 监控作品条目 → 与历史卡片共用的 view 结构 */
 function monitorVideoToView(video, monitor) {
   const hasTask = Boolean(video?.task_id);

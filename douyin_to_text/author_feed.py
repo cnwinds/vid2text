@@ -436,6 +436,42 @@ def _feed_bilibili_ytdlp(
     )
 
 
+def _enrich_youtube_feed_video(video: FeedVideo, *, cookies: str | None) -> FeedVideo:
+    """flat 列表缺互动数据时按需拉单条元数据。"""
+    if video.like_count > 0 and (video.published_at or "").strip():
+        return video
+    from douyin_to_text.pipeline_helpers import engagement_from_ytdlp_info, published_at_from_ytdlp_info
+    from douyin_to_text.yt_dlp_fetcher import extract_info
+
+    cookie_path = None
+    cookie_arg = cookies
+    if cookies:
+        cookie_path = write_cookiefile(cookies)
+        cookie_arg = str(cookie_path) if cookie_path else cookies
+    try:
+        meta = extract_info(video.url, cookies=cookie_arg)
+        info = meta.raw_info or {}
+        pub = published_at_from_ytdlp_info(info) or video.published_at
+        like, comment, play = engagement_from_ytdlp_info(info)
+        return FeedVideo(
+            video_id=video.video_id,
+            url=video.url,
+            title=video.title or (meta.title or ""),
+            published_at=pub,
+            like_count=like or video.like_count,
+            comment_count=comment or video.comment_count,
+            play_count=play or video.play_count,
+            share_count=video.share_count,
+            collect_count=video.collect_count,
+        )
+    except Exception as exc:
+        logger.debug("YouTube 单条 enrich 失败 %s: %s", video.video_id, exc)
+        return video
+    finally:
+        if cookie_path:
+            cookie_path.unlink(missing_ok=True)
+
+
 def _feed_youtube(
     author: AuthorProfile,
     *,
@@ -455,7 +491,7 @@ def _feed_youtube(
             tab = f"https://www.youtube.com/channel/{author.author_key}/videos"
 
     info = _fetch_youtube_tab_info(
-        tab, cookies=cookies, playlistend=offset + limit, flat=False
+        tab, cookies=cookies, playlistend=offset + limit, flat=True
     )
 
     entries = list(info.get("entries") or [])
@@ -496,6 +532,11 @@ def _feed_youtube(
                 collect_count=collect,
             )
         )
+
+    enriched: list[FeedVideo] = []
+    for v in videos:
+        enriched.append(_enrich_youtube_feed_video(v, cookies=cookies))
+    videos = enriched
 
     name = str(info.get("channel") or info.get("uploader") or author.author_name)
     if name:

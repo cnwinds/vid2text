@@ -11,6 +11,7 @@ from typing import Any
 from douyin_to_text.pipeline import _download_url_from_ytdlp_info
 from douyin_to_text.pipeline_resume import find_douyin_artifacts
 from douyin_to_text.url_parser import parse_video_url, resolve_short_url
+from douyin_to_text.url_safety import assert_safe_http_url
 from douyin_to_text.url_safety import UnsafeUrlError, assert_safe_http_url
 from douyin_to_text.yt_dlp_fetcher import download_video as ytdlp_download_video
 from douyin_to_text.yt_dlp_fetcher import extract_info
@@ -126,7 +127,7 @@ def task_needs_media_cache_clear(task: dict) -> bool:
     return any(m in err for m in _MEDIA_FAILURE_MARKERS)
 
 
-def submit_url(url: str, client_ip: str = "") -> tuple[dict, bool]:
+def submit_url(url: str, client_ip: str = "", *, client_scope: str = "") -> tuple[dict, bool]:
     """提交视频 URL，返回 (task_row, cached)。"""
     parsed = resolve_and_parse(url)
 
@@ -147,6 +148,7 @@ def submit_url(url: str, client_ip: str = "") -> tuple[dict, bool]:
             platform=parsed.platform.value,
             video_id=parsed.video_id,
             client_ip=client_ip,
+            client_scope=client_scope,
         )
         return task, False
     except Exception:
@@ -183,6 +185,8 @@ def row_to_subtitle(row: dict, *, cached: bool = False, base_url: str = "") -> d
         "duration_sec": duration_sec,
         "published_at": row.get("published_at") or "",
         "like_count": int(row.get("like_count") or 0),
+        "comment_count": int(row.get("comment_count") or 0),
+        "play_count": int(row.get("play_count") or 0),
     }
 
     if status == "done" and (corrected or raw):

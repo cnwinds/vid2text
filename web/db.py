@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "vid2text.db"
+from web.db_connection import DB_PATH, get_conn
+from web.db_migrations import run_migrations
 
 STATUSES = ("pending", "processing", "done", "failed")
 
@@ -180,19 +179,8 @@ def init_db() -> None:
             )
             """
         )
+        run_migrations(conn)
         conn.commit()
-
-
-@contextmanager
-def get_conn() -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    try:
-        yield conn
-    finally:
-        conn.close()
 
 
 def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -201,7 +189,8 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 _TASK_WITH_MONITOR = """
     SELECT t.*, m.author_name AS monitor_author_name, m.avatar_url AS monitor_avatar_url,
-           mv.published_at AS video_published_at, mv.like_count AS video_like_count
+           mv.published_at AS video_published_at, mv.like_count AS video_like_count,
+           mv.comment_count AS video_comment_count, mv.play_count AS video_play_count
     FROM tasks t
     LEFT JOIN monitors m ON t.monitor_id = m.id
     LEFT JOIN monitor_videos mv ON mv.task_id = t.id
@@ -229,6 +218,9 @@ def enrich_task_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
         row["like_count"] = mv_like
     else:
         row["like_count"] = int(row.get("like_count") or 0)
+    mv_comment = int(row.pop("video_comment_count", 0) or 0)
+    row["comment_count"] = mv_comment
+    row["play_count"] = int(row.pop("video_play_count", 0) or 0)
     return row
 
 
@@ -299,22 +291,24 @@ def create_task(
     video_id: str,
     client_ip: str = "",
     monitor_id: int | None = None,
+    client_scope: str = "",
 ) -> dict[str, Any]:
     now = _utc_now()
     with get_conn() as conn:
         cur = conn.execute(
             """
             INSERT INTO tasks (
-                video_url, platform, video_id, status, client_ip, monitor_id,
-                created_at, updated_at
+                video_url, platform, video_id, status, client_ip, client_scope,
+                monitor_id, created_at, updated_at
             )
-            VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+            VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)
             """,
             (
                 video_url,
                 platform,
                 video_id,
                 client_ip or "",
+                client_scope or "",
                 monitor_id,
                 now,
                 now,
@@ -380,23 +374,62 @@ def update_task(task_id: int, **fields: Any) -> dict[str, Any] | None:
     return get_task(task_id)
 
 
-def count_tasks() -> int:
+def count_tasks(*, client_scope: str | None = None) -> int:
     with get_conn() as conn:
-        cur = conn.execute("SELECT COUNT(*) AS n FROM tasks")
+        if client_scope:
+            ip_fallback = client_scope[3:] if client_scope.startswith("ip:") else ""
+            cur = conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM tasks
+                WHERE client_scope = ?
+                   OR (client_scope = '' AND ? != '' AND client_ip = ?)
+                """,
+                (client_scope, ip_fallback, ip_fallback),
+            )
+        else:
+            cur = conn.execute("SELECT COUNT(*) AS n FROM tasks")
         row = cur.fetchone()
         return int(row["n"]) if row else 0
 
 
-def list_history(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+def count_tasks_by_status(status: str) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            f"""
-            {_TASK_WITH_MONITOR}
-            ORDER BY t.id DESC
-            LIMIT ? OFFSET ?
-            """,
-            (limit, offset),
+            "SELECT COUNT(*) AS n FROM tasks WHERE status = ?",
+            (status,),
         )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+
+def list_history(
+    limit: int = 50,
+    offset: int = 0,
+    *,
+    client_scope: str | None = None,
+) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        if client_scope:
+            ip_fallback = client_scope[3:] if client_scope.startswith("ip:") else ""
+            cur = conn.execute(
+                f"""
+                {_TASK_WITH_MONITOR}
+                WHERE t.client_scope = ?
+                   OR (t.client_scope = '' AND ? != '' AND t.client_ip = ?)
+                ORDER BY t.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (client_scope, ip_fallback, ip_fallback, limit, offset),
+            )
+        else:
+            cur = conn.execute(
+                f"""
+                {_TASK_WITH_MONITOR}
+                ORDER BY t.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
         return [enrich_task_row(row_to_dict(r)) for r in cur.fetchall()]
 
 

@@ -1,4 +1,4 @@
-"""公开字幕 API 鉴权（可选 PUBLIC_API_TOKEN）。"""
+"""公开字幕 API 鉴权（PUBLIC_API_TOKEN）。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def require_public_api_auth(
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     header_token: str | None = Depends(_api_header),
 ) -> None:
-    """PUBLIC_API_TOKEN 未配置时放行（本地开发）；配置后需 Bearer 或 X-Api-Token。"""
+    """未配置 PUBLIC_API_TOKEN 时放行（本地开发兼容）；配置后要求 Bearer 或 X-Api-Token。"""
     expected = public_api_token()
     if not expected:
         return

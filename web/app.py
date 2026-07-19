@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -25,6 +25,7 @@ from web.auth import (
 from web.api_monitors import router as monitors_router
 from web.api_v1 import router as v1_router
 from web.monitor_scanner import start_monitor_scanner, stop_monitor_scanner
+from web.metrics import metrics_text
 from web.step_scheduler import is_scheduler_running
 from web.worker import start_worker, stop_worker
 
@@ -90,6 +91,14 @@ async def health() -> JSONResponse:
         "scheduler": scheduler_status,
     }
     return JSONResponse(status_code=200 if all_ok else 503, content=body)
+
+
+@app.get("/metrics")
+async def metrics() -> PlainTextResponse:
+    return PlainTextResponse(
+        metrics_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
