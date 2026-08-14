@@ -13,6 +13,7 @@ models/
 
 .env
 .env.*
+!.env.example
 output/
 page.html
 video_page.html

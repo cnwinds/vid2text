@@ -1,0 +1,35 @@
+# 生产：拉取预构建镜像直接启动（无需本地 build）
+#   cp .env.example .env   # 编辑 ADMIN_PASSWORD / ADMIN_API_TOKEN 等
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+
+services:
+  vid2text:
+    image: ${VID2TEXT_IMAGE:-ghcr.io/cnwinds/vid2text:latest}
+    container_name: vid2text
+    restart: unless-stopped
+    ports:
+      - "${VID2TEXT_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - SENSEVOICE_OFFLINE=1
+      - SENSEVOICE_MODEL_DIR=/app/models/SenseVoiceSmall-onnx
+      - WORK_CACHE_QUOTA_GB=${WORK_CACHE_QUOTA_GB:-2}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal,douyin.com,iesdouyin.com,bilibili.com,b23.tv,modelscope.cn,aliyuncs.com}
+      - http_proxy=${HTTP_PROXY:-}
+      - https_proxy=${HTTPS_PROXY:-}
+      - no_proxy=${NO_PROXY:-localhost,127.0.0.1,host.docker.internal,douyin.com,iesdouyin.com,bilibili.com,b23.tv,modelscope.cn,aliyuncs.com}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    shm_size: "2gb"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

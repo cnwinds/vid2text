@@ -2,17 +2,22 @@ FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
 
 WORKDIR /app
 
-# apt 阿里云镜像
-RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.aliyun.com|g; s|http://security.ubuntu.com|http://mirrors.aliyun.com|g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true \
-    && sed -i 's|http://archive.ubuntu.com|http://mirrors.aliyun.com|g; s|http://security.ubuntu.com|http://mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
+# 可选国内 apt 镜像（默认阿里云公网；海外构建可 --build-arg APT_MIRROR=）
+ARG APT_MIRROR=http://mirrors.aliyun.com
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|http://archive.ubuntu.com|${APT_MIRROR}|g; s|http://security.ubuntu.com|${APT_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true; \
+      sed -i "s|http://archive.ubuntu.com|${APT_MIRROR}|g; s|http://security.ubuntu.com|${APT_MIRROR}|g" /etc/apt/sources.list 2>/dev/null || true; \
+    fi
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# pip 阿里云 ECS 内网镜像
-ENV PIP_INDEX_URL=https://mirrors.cloud.aliyuncs.com/pypi/simple/ \
-    PIP_TRUSTED_HOST=mirrors.cloud.aliyuncs.com \
+# pip 索引可覆盖（默认阿里云公网；勿用 ECS 内网 mirrors.cloud.aliyuncs.com，CI/本地会失败）
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
+ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST} \
     PIP_DEFAULT_TIMEOUT=300
 
 COPY requirements-docker.txt .

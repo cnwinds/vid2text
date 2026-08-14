@@ -27,9 +27,42 @@ python -m playwright install chromium   # 抖音需要
 
 ---
 
-## Web 应用（推荐）
+## Docker 生产镜像（推荐）
 
-### 启动
+镜像：[`ghcr.io/cnwinds/vid2text`](https://ghcr.io/cnwinds/vid2text)（含 SenseVoice 模型，可直接拉取启动）
+
+```bash
+mkdir -p vid2text && cd vid2text
+curl -fsSL -o docker-compose.prod.yml \
+  https://raw.githubusercontent.com/cnwinds/vid2text/master/docker-compose.prod.yml
+curl -fsSL -o .env.example \
+  https://raw.githubusercontent.com/cnwinds/vid2text/master/.env.example
+cp .env.example .env   # 编辑 ADMIN_PASSWORD / ADMIN_API_TOKEN
+
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+
+浏览器打开 [http://127.0.0.1:8000](http://127.0.0.1:8000)。数据持久化在 `./data`。
+
+单容器等价命令：
+
+```bash
+docker run -d --name vid2text --restart unless-stopped \
+  -p 8000:8000 --env-file .env -v "$PWD/data:/app/data" \
+  --add-host=host.docker.internal:host-gateway --shm-size=2g \
+  ghcr.io/cnwinds/vid2text:latest
+```
+
+本地开发构建见仓库根目录 `docker-compose.yml`（会挂载源码）。
+
+推送到 `master`（或打 `v*` 标签）后，GitHub Actions 会自动构建并推送镜像到 GHCR，标签含 `latest` 与 `sha-<短哈希>`。首次发布后若无法匿名拉取，到 GitHub → Packages → `vid2text` → Package settings 将可见性改为 **Public**。
+
+---
+
+## Web 应用
+
+### 本地启动
 
 ```bash
 python run_web.py
