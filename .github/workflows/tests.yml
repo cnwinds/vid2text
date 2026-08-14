@@ -19,13 +19,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          grep -vE '^(funasr-onnx|modelscope|jieba|numpy)' requirements.txt \
+          # Use docker web deps; skip heavy STT packages (not needed for unit/e2e).
+          grep -vE '^(funasr-onnx|modelscope|jieba|numpy)' requirements-docker.txt \
             | grep -v '^#' \
             | grep -v '^[[:space:]]*$' \
             > /tmp/requirements-ci.txt
           pip install -r /tmp/requirements-ci.txt
-          pip install uvicorn
-          playwright install chromium
+          playwright install --with-deps chromium
 
       - name: Run tests
         env:
