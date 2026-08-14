@@ -13,7 +13,56 @@
 
 ---
 
-## 依赖
+## 快速开始
+
+需要 **Docker / Docker Desktop**。一行命令下载启动器、拉取 [`ghcr.io/cnwinds/vid2text`](https://ghcr.io/cnwinds/vid2text) 并启动。
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cnwinds/vid2text/master/deploy/get-vid2text.sh | bash
+```
+
+国内网络可用 GitHub 镜像（镜像站点可能变更，任选可用前缀）：
+
+```bash
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/cnwinds/vid2text/master/deploy/get-vid2text.sh | bash
+```
+
+### Windows PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/cnwinds/vid2text/master/deploy/get-vid2text.ps1 | iex
+```
+
+国内镜像示例：
+
+```powershell
+irm https://ghfast.top/https://raw.githubusercontent.com/cnwinds/vid2text/master/deploy/get-vid2text.ps1 | iex
+```
+
+打开 [http://localhost:8000](http://localhost:8000)。首次启动会在当前目录创建 `vid2text/`，自动生成 `ADMIN_PASSWORD` / `ADMIN_API_TOKEN` 并打印到终端（管理页 `/monitors`、`/settings` 用密码登录）。数据在 `vid2text/data`。
+
+常用命令（进入安装目录后）：
+
+```bash
+./vid2text.sh log      # 日志
+./vid2text.sh update   # 拉新镜像并重启
+./vid2text.sh stop     # 停止
+```
+
+Windows 对应 `.\vid2text.ps1 log|update|stop`。
+
+说明：GitHub 镜像只加速 **脚本下载**；容器镜像仍来自 `ghcr.io`。若 `docker pull` 失败，需配置可达的 GHCR/代理，或设置环境变量 `VID2TEXT_IMAGE` 指向已同步镜像。也可用 `VID2TEXT_REPO_RAW` 指定 raw 源，例如：
+
+```bash
+VID2TEXT_REPO_RAW=https://raw.gitmirror.com/cnwinds/vid2text/master \
+  bash <(curl -fsSL "$VID2TEXT_REPO_RAW/deploy/get-vid2text.sh")
+```
+
+---
+
+## 依赖（本地开发）
 
 - Python 3.10+
 - **ffmpeg**（PATH）
@@ -27,9 +76,9 @@ python -m playwright install chromium   # 抖音需要
 
 ---
 
-## Docker 生产镜像（推荐）
+## Docker 生产镜像（手动）
 
-镜像：[`ghcr.io/cnwinds/vid2text`](https://ghcr.io/cnwinds/vid2text)（含 SenseVoice 模型，可直接拉取启动）
+镜像：[`ghcr.io/cnwinds/vid2text`](https://ghcr.io/cnwinds/vid2text)（含 SenseVoice 模型）。更推荐上面的[快速开始](#快速开始)。
 
 ```bash
 mkdir -p vid2text && cd vid2text
@@ -42,8 +91,6 @@ cp .env.example .env   # 编辑 ADMIN_PASSWORD / ADMIN_API_TOKEN
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
-
-浏览器打开 [http://127.0.0.1:8000](http://127.0.0.1:8000)。数据持久化在 `./data`。
 
 单容器等价命令：
 
@@ -190,6 +237,7 @@ vid2text/
 │   ├── schemas.py           # Pydantic 模型
 │   ├── templates/index.html
 │   └── static/
+├── deploy/                  # 一行安装：get-vid2text.sh / vid2text.sh（及 Windows .ps1）
 ├── data/                    # 运行时生成（gitignore）
 ├── run_web.py               # Web 启动脚本
 ├── requirements.txt
